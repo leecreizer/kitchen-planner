@@ -1,0 +1,20 @@
+import { readFileSync } from 'node:fs';
+import { setReader, loadCatalog } from '../src/kjlLib';
+import { autoPlan } from '../src/autoplan';
+import { defaultDesign, newOpening } from '../src/plan';
+setReader(async (p) => JSON.parse(readFileSync(`public/kjl/${p}`, 'utf-8')));
+const cat = await loadCatalog();
+const show = (name: string, d: ReturnType<typeof defaultDesign>) => {
+  const cs = autoPlan(d, cat, 'EO');
+  const c = cs[0];
+  console.log('\n##', name, cs.length, c?.title);
+  if (!c) return;
+  for (const w of c.walls) console.log(' wall', w, c.items.filter((x) => x.wall === w && x.level !== 'wall').sort((a, b) => a.t - b.t).map((x) => `${x.key}:${x.t}+${x.w}`).join(' '));
+  console.log(' ', c.reasons.filter((r) => /코너/.test(r)).join(' / '));
+};
+const base = () => ({ ...defaultDesign(), layout: 'L' as const });
+show('ㄱ 기본', base());
+const d1 = base(); d1.openings.push(newOpening('utility', d1.room, 0, 3200)); show('ㄱ + 다용도실 뒷벽 끝(코너장 자리)', d1);
+const d2 = { ...defaultDesign(), layout: 'U' as const }; show('ㄷ 기본', d2);
+const d3 = { ...defaultDesign(), layout: 'U' as const }; d3.openings.push(newOpening('pantry', d3.room, 2, 300)); show('ㄷ + 팬트리 오른쪽 벽 코너 쪽', d3);
+const d4 = { ...defaultDesign(), layout: 'U' as const }; d4.openings.push(newOpening('subkitchen', d4.room, 2, 2500)); show('ㄷ + 서브주방 코너와 떨어짐', d4);

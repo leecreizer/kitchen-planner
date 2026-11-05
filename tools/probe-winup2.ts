@@ -1,0 +1,10 @@
+import { readFileSync } from 'node:fs';
+import { setReader, loadCatalog } from '../src/kjlLib';
+import { autoPlan } from '../src/autoplan';
+import { defaultDesign, type Design } from '../src/plan';
+setReader(async (p) => JSON.parse(readFileSync(`public/kjl/${p}`, 'utf-8')));
+const cat = await loadCatalog();
+const d = { ...defaultDesign(), layout: 'L' } as Design;
+const win = d.openings.find((o) => o.kind === 'window')!; win.t = 1300; win.w = 900; win.h = 600;
+const c = autoPlan(d, cat, 'EO')[0];
+for (const lv of ['wall', 'tall', 'base']) console.log(lv, c.items.filter((i) => i.wall === win.wall && i.level === lv).sort((a, b) => a.t - b.t).map((i) => `${i.key}:${Math.round(i.t)}+${i.w}${JSON.stringify(i.ov ?? {})}`).join(' '));

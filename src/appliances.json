@@ -1,0 +1,1478 @@
+[
+ {
+  "cat": "hob",
+  "name": "한샘 올인원 후드일체형 인덕션 4구",
+  "model": "CTB-HS614MD",
+  "size": [
+   830,
+   515,
+   200
+  ],
+  "cut": [
+   760,
+   496
+  ],
+  "badge": "BEST"
+ },
+ {
+  "cat": "hob",
+  "name": "한샘 올인원 후드일체형 인덕션 쿡탑 600",
+  "model": "CTB-HS624MD",
+  "size": [
+   600,
+   515,
+   260
+  ],
+  "cut": [
+   560,
+   490
+  ],
+  "badge": "BEST"
+ },
+ {
+  "cat": "hob",
+  "name": "밀레 후드일체형 인덕션 4구",
+  "model": "CTB-KMDA7476FL",
+  "size": [
+   800,
+   520,
+   200
+  ],
+  "cut": [
+   780,
+   500
+  ]
+ },
+ {
+  "cat": "hob",
+  "name": "시리우스 후드일체형 인덕션 4구",
+  "model": "CTB-SDDH5",
+  "size": [
+   900,
+   520,
+   190
+  ],
+  "cut": [
+   860,
+   490
+  ]
+ },
+ {
+  "cat": "hob",
+  "name": "FRANKE 후드일체형 인덕션 4구",
+  "model": "CTB-FMY839HI20",
+  "size": [
+   830,
+   520,
+   230
+  ],
+  "cut": [
+   770,
+   490
+  ]
+ },
+ {
+  "cat": "hob",
+  "name": "가게나우 후드일체형 인덕션 4구",
+  "model": "CTB-CV282101",
+  "size": [
+   793,
+   513,
+   227
+  ],
+  "cut": [
+   780,
+   490
+  ],
+  "badge": "NEW"
+ },
+ {
+  "cat": "hob",
+  "name": "한샘 인덕션 4구 제트블랙 / 그레이지",
+  "model": "CTB-HS514MD BK (제트블랙)",
+  "size": [
+   590,
+   520,
+   58
+  ],
+  "cut": [
+   560,
+   480
+  ],
+  "badge": "NEW"
+ },
+ {
+  "cat": "hob",
+  "name": "한샘 인덕션 쿡탑 3구 BK / WH",
+  "model": "CTB-HS513YD",
+  "size": [
+   590,
+   510,
+   60
+  ],
+  "cut": [
+   560,
+   480
+  ],
+  "badge": "BEST"
+ },
+ {
+  "cat": "hob",
+  "name": "쿠쿠 인덕션 3구 WH",
+  "model": "CIR-EP348FAW",
+  "size": [
+   588,
+   508,
+   57
+  ],
+  "cut": [
+   560,
+   480
+  ]
+ },
+ {
+  "cat": "hob",
+  "name": "쿠쿠 인덕션 쿡탑 3구 F302FB (무광블랙)",
+  "model": "CIR-F302FB",
+  "size": [
+   588,
+   508,
+   57
+  ],
+  "cut": [
+   560,
+   480
+  ]
+ },
+ {
+  "cat": "hob",
+  "name": "FRANKE 마리스 인덕션 4구",
+  "model": "CTB-FMA654IFBK",
+  "size": [
+   650,
+   510,
+   50
+  ],
+  "cut": [
+   560,
+   490
+  ]
+ },
+ {
+  "cat": "hob",
+  "name": "밀레 인덕션 쿡탑 4구",
+  "model": "CIR-KM7564FR",
+  "size": [
+   626,
+   526,
+   45
+  ],
+  "cut": [
+   600,
+   500
+  ]
+ },
+ {
+  "cat": "hob",
+  "name": "밀레 인덕션 쿡탑 3구",
+  "model": "CIR-KM7220FL",
+  "size": [
+   620,
+   520,
+   53
+  ],
+  "cut": [
+   560,
+   480
+  ]
+ },
+ {
+  "cat": "hob",
+  "name": "한샘 하이라이트 쿡탑 2구",
+  "model": "CTB-HS312P",
+  "size": [
+   290,
+   520,
+   48
+  ],
+  "cut": [
+   265,
+   500
+  ]
+ },
+ {
+  "cat": "hob",
+  "name": "한샘 하이라이트 쿡탑 1구",
+  "model": "CTB-HS311P",
+  "size": [
+   290,
+   360,
+   48
+  ],
+  "cut": [
+   265,
+   340
+  ]
+ },
+ {
+  "cat": "hob",
+  "name": "한샘 하이라이트 쿡탑 3구",
+  "model": "CTB-HS323P",
+  "size": [
+   580,
+   510,
+   48
+  ],
+  "cut": [
+   560,
+   480
+  ]
+ },
+ {
+  "cat": "hob",
+  "name": "한샘 하이브리드 쿡탑 3구",
+  "model": "CTB-HS413P",
+  "size": [
+   590,
+   510,
+   65
+  ],
+  "cut": [
+   560,
+   480
+  ]
+ },
+ {
+  "cat": "hob",
+  "name": "삼성 비스포크 AI 인덕션 3구 콰트로플렉스 / 일반",
+  "model": "CTB-CC80H63G1HS (콰트로)",
+  "size": [
+   600,
+   520,
+   48
+  ],
+  "cut": [
+   560,
+   480
+  ]
+ },
+ {
+  "cat": "hob",
+  "name": "가게나우 인덕션 쿡탑 4구",
+  "model": "CTB-CI282101",
+  "size": [
+   793,
+   513,
+   56
+  ],
+  "cut": [
+   780,
+   490
+  ]
+ },
+ {
+  "cat": "hob",
+  "name": "Electrolux 커넥티드 인덕션 쿡탑 3구",
+  "model": "CTB-EL523E",
+  "size": [
+   610,
+   510,
+   null
+  ],
+  "cut": [
+   560,
+   480
+  ]
+ },
+ {
+  "cat": "hob",
+  "name": "LG DIOS 인덕션 BK",
+  "model": "BEI3QEBLOE",
+  "size": [
+   575,
+   515,
+   59
+  ],
+  "cut": [
+   560,
+   480
+  ]
+ },
+ {
+  "cat": "hob",
+  "name": "LG 오브제 인덕션 _ 와이드존 (미스트 에센스 화이트)",
+  "model": "BEF3ANHLE",
+  "size": [
+   580,
+   520,
+   59
+  ],
+  "cut": [
+   560,
+   480
+  ]
+ },
+ {
+  "cat": "hob",
+  "name": "가게나우 인덕션 4구",
+  "model": "CTB-CV282101",
+  "size": [
+   793,
+   513,
+   227
+  ],
+  "cut": [
+   780,
+   490
+  ],
+  "badge": "NEW"
+ },
+ {
+  "cat": "hob",
+  "name": "한샘 가스쿡탑 3구 플러그타입",
+  "model": "CTB-HS133P",
+  "size": [
+   580,
+   460,
+   98
+  ],
+  "cut": [
+   554,
+   430
+  ]
+ },
+ {
+  "cat": "hob",
+  "name": "한샘 가스쿡탑 2구",
+  "model": "CTB-B252HS",
+  "size": [
+   290,
+   480,
+   91
+  ],
+  "cut": [
+   258,
+   440
+  ]
+ },
+ {
+  "cat": "hob",
+  "name": "한샘 세라믹 가스쿡탑 3구",
+  "model": "CTB-GB363H",
+  "size": [
+   590,
+   510,
+   102
+  ],
+  "cut": [
+   560,
+   480
+  ]
+ },
+ {
+  "cat": "hob",
+  "name": "한샘 슬림프리 가스쿡탑 3구",
+  "model": "CTF-HS300ST",
+  "size": [
+   590,
+   505,
+   90
+  ]
+ },
+ {
+  "cat": "hood",
+  "name": "엘리카 OM air 후드 750",
+  "model": "HDC-OM750",
+  "size": [
+   750,
+   400,
+   1100
+  ],
+  "type": "벽부형"
+ },
+ {
+  "cat": "hood",
+  "name": "엘리카 샤이어 후드 SHIRE 600/900 WH/BK",
+  "model": "HDC-SHIRE60/90 WH/BK",
+  "size": [
+   898,
+   325,
+   1045
+  ],
+  "type": "벽부형"
+ },
+ {
+  "cat": "hood",
+  "name": "한샘 오토오픈 후드 900 BK/WH",
+  "model": "HDC-HSAO190SD",
+  "size": [
+   895,
+   387,
+   230
+  ],
+  "type": "벽부형"
+ },
+ {
+  "cat": "hood",
+  "name": "한샘 커넥티드 네오클래식 침니후드 600/900 WH/BK",
+  "model": "HDC-HSCNC160/260/190/290H",
+  "size": [
+   898,
+   500,
+   805
+  ],
+  "type": "벽부형"
+ },
+ {
+  "cat": "hood",
+  "name": "한샘 플레인 침니후드 900",
+  "model": "HDC-HSPL190P",
+  "size": [
+   898,
+   450,
+   955
+  ],
+  "type": "벽부형"
+ },
+ {
+  "cat": "hood",
+  "name": "한샘 유로 침니후드 600",
+  "model": "HDC-ECH60PN",
+  "size": [
+   598,
+   450,
+   800
+  ],
+  "type": "벽부형"
+ },
+ {
+  "cat": "hood",
+  "name": "한샘 코니스 클래식 후드 900 WH",
+  "model": "HDC-HSCO190H",
+  "size": [
+   898,
+   500,
+   900
+  ],
+  "type": "벽부형"
+ },
+ {
+  "cat": "hood",
+  "name": "한샘 네오클래식 침니후드 600 WH/BK",
+  "model": "HDC-HSNC160H/260H",
+  "size": [
+   598,
+   500,
+   805
+  ],
+  "type": "벽부형"
+ },
+ {
+  "cat": "hood",
+  "name": "한샘 커넥티드 iD 침니후드 900 WH",
+  "model": "HDC-HSCID190H",
+  "size": [
+   898,
+   500,
+   765
+  ],
+  "type": "벽부형"
+ },
+ {
+  "cat": "hood",
+  "name": "한샘 빌트인 히든 글라스 후드 BK / WH",
+  "model": "HDB-HSBH160MD BK",
+  "size": [
+   598,
+   288,
+   295
+  ],
+  "badge": "NEW",
+  "type": "빌트인 (벽장내부 고정형)"
+ },
+ {
+  "cat": "hood",
+  "name": "한샘 히든 빌트인후드 600",
+  "model": "HDB-HSBI160P",
+  "size": [
+   598,
+   285,
+   180
+  ],
+  "badge": "BEST",
+  "type": "빌트인(기본 : 벽장내부 고정형 / 옵션 : 멍도어 벽고정형)"
+ },
+ {
+  "cat": "hood",
+  "name": "한샘 빌트인 후드 900 슬림 HSBI290T",
+  "model": "HDB-HSBI290T",
+  "size": [
+   868,
+   289,
+   425
+  ],
+  "badge": "BEST",
+  "type": "빌트인(벽장내부 고정형)"
+ },
+ {
+  "cat": "hood",
+  "name": "한샘 아이슬라이딩 빌트인 후드 600",
+  "model": "HDB-HSI600S",
+  "size": [
+   598,
+   290,
+   144
+  ],
+  "type": "빌트인(벽장내부 부착형)"
+ },
+ {
+  "cat": "hood",
+  "name": "한샘 슬라이딩 후드 600_전동댐퍼포함",
+  "model": "HDB-HSSL160H",
+  "size": [
+   598,
+   290,
+   144
+  ],
+  "type": "빌트인(벽장내부 부착형)"
+ },
+ {
+  "cat": "hood",
+  "name": "엘리카 빌트인 후드 Hidden 900용 (W714)",
+  "model": "HDB-hidden",
+  "size": [
+   714,
+   282,
+   339
+  ],
+  "badge": "NEW",
+  "type": "빌트인 (벽장내부 고정형)"
+ },
+ {
+  "cat": "hood",
+  "name": "한샘 갤럭시 후드 ST",
+  "model": "HDB-GLX60PN",
+  "size": [
+   598,
+   393,
+   679
+  ],
+  "type": "독립형(벽 부착형)"
+ },
+ {
+  "cat": "hood",
+  "name": "엘리카 문 아일랜드 후드 1800",
+  "model": "HDC-MOONISLAND",
+  "size": [
+   1748,
+   730,
+   1135
+  ],
+  "type": "천정 고정형 홈바 타입"
+ },
+ {
+  "cat": "hood",
+  "name": "엘리카 웨이브 아일랜드 후드 WAVE",
+  "model": "HDC-WAVE",
+  "size": [
+   510,
+   null,
+   1420
+  ],
+  "type": "아일랜드형"
+ },
+ {
+  "cat": "hood",
+  "name": "한샘 필로스 아일랜드 후드 WH",
+  "model": "HDC-HSSI136H",
+  "size": [
+   340,
+   340,
+   750
+  ],
+  "type": "천정 고정형"
+ },
+ {
+  "cat": "hood",
+  "name": "엘리카 갤럭시 아일랜드 침니후드 900",
+  "model": "HDC-GALAXY",
+  "size": [
+   898,
+   450,
+   955
+  ],
+  "type": "벽부형 / 천정 고정형"
+ },
+ {
+  "cat": "hood",
+  "name": "엘리카 제니스 아일랜드 후드 330 WH",
+  "model": "HDC-ZN330W",
+  "size": [
+   330,
+   null,
+   1090
+  ],
+  "type": "천정 고정형"
+ },
+ {
+  "cat": "hood",
+  "name": "엘리카 제니스 아일랜드 후드 ST 330",
+  "model": "HDC-ZN330",
+  "size": [
+   330,
+   null,
+   1090
+  ],
+  "type": "천정 고정형"
+ },
+ {
+  "cat": "oven",
+  "name": "가게나우 전기오븐 B OP210132",
+  "model": "EOB-H7464BP",
+  "size": [
+   595,
+   570,
+   596
+  ],
+  "badge": "NEW"
+ },
+ {
+  "cat": "oven",
+  "name": "가게나우 콤비오븐 BMP250130 / 워머드로워 WSP221130",
+  "model": "EOB-BMP250130",
+  "badge": "NEW"
+ },
+ {
+  "cat": "oven",
+  "name": "밀레 G7000 전기오븐 H7464BP",
+  "model": "EOB-H7464BP",
+  "size": [
+   595,
+   570,
+   596
+  ]
+ },
+ {
+  "cat": "oven",
+  "name": "밀레 G7000 전기오븐 G7860BM",
+  "model": "EOM-G7860BM",
+  "size": [
+   595,
+   570,
+   596
+  ]
+ },
+ {
+  "cat": "oven",
+  "name": "밀레 G7000 콤비오븐 H7240BM",
+  "model": "EOB-H7240BM",
+  "size": [
+   595,
+   565,
+   456
+  ]
+ },
+ {
+  "cat": "oven",
+  "name": "밀레 G7000 콤비오븐 H7840BM",
+  "model": "EOB-H7840BM",
+  "size": [
+   595,
+   565,
+   456
+  ]
+ },
+ {
+  "cat": "oven",
+  "name": "삼성 스마트오븐 NQ36A6555CK",
+  "model": "EOB-NQ36A6555CK",
+  "size": [
+   596,
+   472,
+   460
+  ]
+ },
+ {
+  "cat": "oven",
+  "name": "삼성 스마트오븐 NQ36A6588CW 글램화이트",
+  "model": "EOB-NQ36A6588CW",
+  "size": [
+   598,
+   440,
+   458
+  ]
+ },
+ {
+  "cat": "oven",
+  "name": "LG 광파오븐 기본형",
+  "model": "MZ385EBTA",
+  "size": [
+   595,
+   469,
+   459
+  ]
+ },
+ {
+  "cat": "oven",
+  "name": "LG 광파오븐 드로우형",
+  "model": "MZ385EBTAD",
+  "size": [
+   595,
+   469,
+   596
+  ]
+ },
+ {
+  "cat": "sink",
+  "name": "클린업 슈퍼 사일런트 싱크볼 SB886 SET [코팅]",
+  "model": "SSU-SB886",
+  "size": [
+   886,
+   551,
+   203
+  ],
+  "type": "언더싱크(O / F : 무)"
+ },
+ {
+  "cat": "sink",
+  "name": "엘레시 인셋 싱크볼 BLACK HOLE 940",
+  "model": "SSU-ELC940B",
+  "size": [
+   940,
+   520,
+   237
+  ],
+  "type": "언더싱크(O / F : 유)"
+ },
+ {
+  "cat": "sink",
+  "name": "프랑케 싱크블 760 화이트 / 블랙",
+  "model": "SSU-FR760",
+  "size": [
+   760,
+   null,
+   null
+  ],
+  "type": "언더싱크(O / F : 무)"
+ },
+ {
+  "cat": "sink",
+  "name": "한샘 클린엠보 싱크볼 CGD84E",
+  "model": "SSU-CGD84E",
+  "size": [
+   840,
+   460,
+   195
+  ],
+  "badge": "BEST",
+  "type": "언더싱크(O / F : 무)"
+ },
+ {
+  "cat": "sink",
+  "name": "한샘 클린엠보 싱크볼 CGD96E",
+  "model": "SSU-CGD96E",
+  "size": [
+   960,
+   460,
+   190
+  ],
+  "type": "언더싱크(O / F : 무)"
+ },
+ {
+  "cat": "sink",
+  "name": "한샘 클린 싱크볼 CGD860",
+  "model": "SSU-CGD860",
+  "size": [
+   860,
+   460,
+   190
+  ],
+  "type": "언더싱크(O / F : 무)"
+ },
+ {
+  "cat": "sink",
+  "name": "한샘 PVD 싱크볼 CSQ816B [PVD코팅]",
+  "model": "SSU-000163",
+  "size": [
+   816,
+   436,
+   235
+  ],
+  "type": "언더싱크(O / F : 무)"
+ },
+ {
+  "cat": "sink",
+  "name": "한샘 클린 레이어드 싱크볼 CL950 [코팅]",
+  "model": "SSU-CL950",
+  "size": [
+   950,
+   455,
+   258
+  ],
+  "type": "언더싱크(O / F : 무)"
+ },
+ {
+  "cat": "sink",
+  "name": "키친바흐 사일런트 클린엠보 싱크볼 CGD86SE",
+  "model": "SSU-CGD86SE",
+  "size": [
+   860,
+   460,
+   197
+  ],
+  "type": "언더싱크(O / F : 무)"
+ },
+ {
+  "cat": "sink",
+  "name": "한샘 클린 싱크볼 CSQ816",
+  "model": "SSU-CSQ816",
+  "size": [
+   816,
+   436,
+   235
+  ],
+  "type": "언더싱크(O / F : 무)"
+ },
+ {
+  "cat": "sink",
+  "name": "한샘 레이어드 클린 싱크볼 CL830",
+  "model": "SSU-CL830",
+  "size": [
+   830,
+   456,
+   260
+  ],
+  "badge": "NEW",
+  "type": "언더싱크(O / F : 무)"
+ },
+ {
+  "cat": "sink",
+  "name": "한샘 클린 엠보 싱크볼 CDS85E_수전타공",
+  "model": "SSU-CDS85E",
+  "size": [
+   850,
+   515,
+   204
+  ],
+  "type": "언더싱크(O / F : 무)"
+ },
+ {
+  "cat": "sink",
+  "name": "한샘 클린 싱크볼 CDS85_수전타공 2개",
+  "model": "SSU-CDS85",
+  "size": [
+   850,
+   515,
+   204
+  ],
+  "type": "언더싱크(O / F : 무)"
+ },
+ {
+  "cat": "sink",
+  "name": "한샘 클린 싱크볼 CDS85S_우측 수전타공 1개",
+  "model": "SSU-CDS85S",
+  "size": [
+   850,
+   515,
+   204
+  ],
+  "type": "언더싱크(O / F : 무)"
+ },
+ {
+  "cat": "sink",
+  "name": "한샘 클린 엠보스 코너싱크볼 CCR964",
+  "model": "SSU-CCR964",
+  "size": [
+   964,
+   580,
+   200
+  ],
+  "type": "언더싱크(O / F : 무)"
+ },
+ {
+  "cat": "sink",
+  "name": "한샘 클린 싱크볼 C630",
+  "model": "SSU-C630",
+  "size": [
+   630,
+   460,
+   200
+  ],
+  "type": "언더싱크(O / F : 유)"
+ },
+ {
+  "cat": "sink",
+  "name": "한샘 클린 싱크볼 C480",
+  "model": "SSU-C480",
+  "size": [
+   480,
+   430,
+   182
+  ],
+  "type": "언더싱크(O / F : 유)"
+ },
+ {
+  "cat": "sink",
+  "name": "한샘 클린 엠보싱크볼 CDS75E",
+  "model": "SSU-CDS75E",
+  "size": [
+   750,
+   480,
+   201
+  ],
+  "type": "언더싱크(O / F : 무)"
+ },
+ {
+  "cat": "sink",
+  "name": "한샘 클린 싱크볼 CSQ630",
+  "model": "SSU-CSQ630",
+  "size": [
+   630,
+   436,
+   236
+  ],
+  "type": "언더싱크(O / F : 무)"
+ },
+ {
+  "cat": "sink",
+  "name": "한샘 클린 싱크볼 CQ540",
+  "model": "SSU-CQ540",
+  "size": [
+   540,
+   460,
+   200
+  ],
+  "type": "언더싱크(O / F : 무)"
+ },
+ {
+  "cat": "sink",
+  "name": "한샘 클린 엠보싱크볼 CQ820E",
+  "model": "SSU-CQ820E",
+  "size": [
+   820,
+   470,
+   200
+  ],
+  "type": "언더싱크(O / F : 무)"
+ },
+ {
+  "cat": "sink",
+  "name": "한샘 클린 싱크볼 CQ820",
+  "model": "SSU-CQ820",
+  "size": [
+   820,
+   470,
+   200
+  ],
+  "type": "언더싱크(O / F : 무)"
+ },
+ {
+  "cat": "sink",
+  "name": "한샘 클린 엠보스 싱크볼 CGES85 L / R",
+  "model": "SSU-CGES85",
+  "size": [
+   850,
+   515,
+   210
+  ],
+  "type": "언더싱크(O / F : 무)"
+ },
+ {
+  "cat": "sink",
+  "name": "한샘 클린 싱크볼 CG850",
+  "model": "SSU-CG850",
+  "size": [
+   850,
+   515,
+   190
+  ],
+  "badge": "NEW",
+  "type": "언더싱크(O / F : 무)"
+ },
+ {
+  "cat": "faucet",
+  "name": "제시 입수전 17177",
+  "model": "HRD-17177"
+ },
+ {
+  "cat": "faucet",
+  "name": "제시 입수전 17185",
+  "model": "HRD-17185"
+ },
+ {
+  "cat": "faucet",
+  "name": "제시 입수전 50317",
+  "model": "HRD-50317"
+ },
+ {
+  "cat": "faucet",
+  "name": "파포니 아일랜드 입수전 LIGHT",
+  "model": "HRD-LIGHT"
+ },
+ {
+  "cat": "faucet",
+  "name": "그로헤 입수전 K4",
+  "model": "HRD-K4"
+ },
+ {
+  "cat": "faucet",
+  "name": "그로헤 입수전 MINTA",
+  "model": "HRD-MINTA"
+ },
+ {
+  "cat": "faucet",
+  "name": "그로헤 입수전 ESSENCE",
+  "model": "HRD-ESSENCE"
+ },
+ {
+  "cat": "faucet",
+  "name": "그로헤 입수전 ZEDRA",
+  "model": "HRD-NEWZEDRA",
+  "badge": "NEW"
+ },
+ {
+  "cat": "faucet",
+  "name": "파포니 입수전 RINGO",
+  "model": "HRD-RINGO"
+ },
+ {
+  "cat": "faucet",
+  "name": "아메리칸스탠다드 입수전 ARCO",
+  "model": "HRD-ARCO"
+ },
+ {
+  "cat": "faucet",
+  "name": "아메리칸스탠다드 입수전 ARCO 무광",
+  "model": "HRD-ARCOB",
+  "badge": "NEW"
+ },
+ {
+  "cat": "faucet",
+  "name": "아메리칸스탠다드 입수전 VISTA",
+  "model": "HRD-VISTA"
+ },
+ {
+  "cat": "faucet",
+  "name": "콜러 입수전 ELATE",
+  "model": "HRD-KHELATE"
+ },
+ {
+  "cat": "faucet",
+  "name": "그로헤 아일랜드 입수전 ESSENCE",
+  "model": "HRD-ESSENCEIB",
+  "badge": "NEW"
+ },
+ {
+  "cat": "faucet",
+  "name": "그로헤 입수전 ZEDRA 무광",
+  "model": "HRD-NEWZEDRAB",
+  "badge": "NEW"
+ },
+ {
+  "cat": "faucet",
+  "name": "콜러 입수전 MALLECO 터치리스(센서형)",
+  "model": "HRD-MALLECO",
+  "badge": "NEW"
+ },
+ {
+  "cat": "faucet",
+  "name": "한샘 입수전 ML401H",
+  "model": "HRD-ML401H",
+  "badge": "BEST"
+ },
+ {
+  "cat": "faucet",
+  "name": "한샘 입수전 HS470",
+  "model": "HRD-HS470"
+ },
+ {
+  "cat": "faucet",
+  "name": "한샘 입수전 HS460",
+  "model": "HRD-HS460"
+ },
+ {
+  "cat": "faucet",
+  "name": "한샘 입수전 DD270",
+  "model": "HRD-DD270"
+ },
+ {
+  "cat": "faucet",
+  "name": "한샘 입수전 DD301",
+  "model": "HRD-DD301"
+ },
+ {
+  "cat": "faucet",
+  "name": "한샘 입수전 DD320C",
+  "model": "HRD-DD320C"
+ },
+ {
+  "cat": "faucet",
+  "name": "한샘 입수전 ML402H",
+  "model": "HRD-ML402H"
+ },
+ {
+  "cat": "faucet",
+  "name": "한샘 입수전 HS610S 스텐/니켈 무광",
+  "model": "HRD-HS610S"
+ },
+ {
+  "cat": "faucet",
+  "name": "한샘 입수전 HS610B 스텐/흑니켈 무광",
+  "model": "HRD-HS610B"
+ },
+ {
+  "cat": "faucet",
+  "name": "한샘 플렉시블 입수전 ML500",
+  "model": "HRD-ml500"
+ },
+ {
+  "cat": "faucet",
+  "name": "한샘 입수전 HS620S 스텐/니켈 무광",
+  "model": "HRD-HS620S"
+ },
+ {
+  "cat": "faucet",
+  "name": "라우체 피오 폭포수전 TM0030N",
+  "model": "TM0030N",
+  "badge": "NEW"
+ },
+ {
+  "cat": "faucet",
+  "name": "한샘 입수전 HS620B",
+  "model": "HRD-HS620B"
+ },
+ {
+  "cat": "faucet",
+  "name": "한샘 입수전 HS620W",
+  "model": "HRD-HS620W"
+ },
+ {
+  "cat": "faucet",
+  "name": "한샘 입수전 HS670S",
+  "model": "HRD-HS670S"
+ },
+ {
+  "cat": "faucet",
+  "name": "한샘 입수전 HS670B",
+  "model": "HRD-HS670B"
+ },
+ {
+  "cat": "faucet",
+  "name": "한샘 입수전 투홀 HS710S 무광",
+  "model": "HRD-HS710S",
+  "badge": "NEW"
+ },
+ {
+  "cat": "faucet",
+  "name": "한샘 필터 입수전 HS151F",
+  "model": "HRD-HS151F"
+ },
+ {
+  "cat": "faucet",
+  "name": "한샘 필터 입수전 HS251F",
+  "model": "HRD-HS251F"
+ },
+ {
+  "cat": "faucet",
+  "name": "한샘 필터 입수전 HS451F",
+  "model": "HRD-HS451F"
+ },
+ {
+  "cat": "faucet",
+  "name": "한샘 벽수전 DD230",
+  "model": "HRW-DD230"
+ },
+ {
+  "cat": "faucet",
+  "name": "한샘 세제수전 750ml",
+  "model": "HRD-HSDP750"
+ },
+ {
+  "cat": "faucet",
+  "name": "한샘 입수전 ML300",
+  "model": "HRD-DD320C"
+ },
+ {
+  "cat": "faucet",
+  "name": "한샘 입수전 ML201",
+  "model": "HRD-ML201"
+ },
+ {
+  "cat": "faucet",
+  "name": "한샘 입수전 ML101",
+  "model": "HRD-ML101"
+ },
+ {
+  "cat": "faucet",
+  "name": "한샘 입수전 ML150",
+  "model": "HRD-ML150"
+ },
+ {
+  "cat": "dish",
+  "name": "BESPOKE AI 식기세척기",
+  "model": "DWB-DW90F79F1U01",
+  "size": [
+   595,
+   572,
+   815
+  ],
+  "type": "빌트인(전용도어패널)"
+ },
+ {
+  "cat": "dish",
+  "name": "한샘 풀빌트인 식기세척기 HS7160MD",
+  "model": "DWB-HS7160MD",
+  "size": [
+   598,
+   572,
+   865
+  ],
+  "type": "완전빌트인(도어부착형)"
+ },
+ {
+  "cat": "dish",
+  "name": "밀레 빌트인 식기세척기 G7604CSCi",
+  "model": "DWB-G7604CSCi",
+  "size": [
+   598,
+   570,
+   815
+  ],
+  "type": "빌트인(도어부착형)"
+ },
+ {
+  "cat": "dish",
+  "name": "밀레 완전BI 식기세척기 G7180CSCVi",
+  "model": "DWB-G7180CSCVi",
+  "size": [
+   598,
+   570,
+   815
+  ],
+  "type": "완전빌트인(도어부착형)"
+ },
+ {
+  "cat": "dish",
+  "name": "LG AI 오브제컬렉션 식기세척기 (네이처 에센스 화이트)",
+  "model": "DEE6EWE",
+  "size": [
+   598,
+   567,
+   880
+  ],
+  "type": "빌트인(전용도어패널_컬러고정)"
+ },
+ {
+  "cat": "dish",
+  "name": "BESPOKE AI 식기세척기",
+  "model": "DWB-DW90F79F1UAP",
+  "size": [
+   595,
+   572,
+   815
+  ],
+  "type": "빌트인(전용도어패널)"
+ },
+ {
+  "cat": "dish",
+  "name": "LG AI 오브제컬렉션 식기세척기 (네이처 베이지)",
+  "model": "DEE6BGE",
+  "size": [
+   598,
+   567,
+   880
+  ],
+  "type": "빌트인(전용도어패널_컬러고정)"
+ },
+ {
+  "cat": "dish",
+  "name": "가게나우 풀빌트인 식기세척기 DF270101",
+  "model": "DWB-DF270101",
+  "size": [
+   598,
+   572,
+   815
+  ],
+  "badge": "NEW",
+  "type": "완전빌트인 (도어부착형)"
+ },
+ {
+  "cat": "fridge",
+  "name": "삼성 비스포크 냉장고 4도어(1등급 / 2등급)",
+  "model": "RM70F64R1##(1등급)",
+  "size": [
+   912,
+   683,
+   1853
+  ],
+  "type": "세미빌트인"
+ },
+ {
+  "cat": "fridge",
+  "name": "비스포크 냉장고 1도어 변온 455_좌/우",
+  "model": "RFB-RZ24C58G0AP",
+  "size": [
+   455,
+   685,
+   1853
+  ],
+  "type": "세미빌트인"
+ },
+ {
+  "cat": "fridge",
+  "name": "비스포크 냉장고 1도어 냉장 595_좌/우",
+  "model": "RFB-RR40A####",
+  "size": [
+   595,
+   694,
+   1853
+  ],
+  "type": "세미빌트인"
+ },
+ {
+  "cat": "fridge",
+  "name": "비스포크 냉장고 1도어 김치 595_좌/우",
+  "model": "RFB-RQ34C####",
+  "size": [
+   595,
+   694,
+   1853
+  ],
+  "type": "세미빌트인"
+ },
+ {
+  "cat": "fridge",
+  "name": "비스포크 냉장고 1도어 냉동 595_좌/우",
+  "model": "RFB-RZ34A####",
+  "size": [
+   595,
+   694,
+   1853
+  ],
+  "type": "세미빌트인"
+ },
+ {
+  "cat": "fridge",
+  "name": "삼성 비스포크 3도어 김치냉장고",
+  "model": "RFB-RQ33C7411AP",
+  "size": [
+   695,
+   600,
+   1853
+  ],
+  "type": "세미빌트인"
+ },
+ {
+  "cat": "fridge",
+  "name": "LG Fit&Max 냉장고 4도어 (기본 / STEM)",
+  "model": "M626GBB032(베이지)",
+  "size": [
+   914,
+   698,
+   1860
+  ],
+  "type": "세미빌트인"
+ },
+ {
+  "cat": "fridge",
+  "name": "LG Fit&Max 냉장고 4도어 노크온 (기본 / STEM)",
+  "model": "M626GBB032(베이지)",
+  "size": [
+   914,
+   698,
+   1860
+  ],
+  "type": "세미빌트인"
+ },
+ {
+  "cat": "fridge",
+  "name": "LG Fit&Max 냉장고 1도어 (냉장)",
+  "model": "X324GB3S(베이지)",
+  "size": [
+   598,
+   670,
+   1860
+  ],
+  "type": "세미빌트인"
+ },
+ {
+  "cat": "fridge",
+  "name": "LG Fit&Max 냉장고 3도어 (김치)",
+  "model": "Z334GBB171(베이지)",
+  "size": [
+   598,
+   670,
+   1860
+  ],
+  "type": "세미빌트인"
+ },
+ {
+  "cat": "fridge",
+  "name": "LG Fit&Max 냉장고 1도어 (김치)",
+  "model": "Z324GB3S(베이지)",
+  "size": [
+   598,
+   670,
+   1860
+  ],
+  "type": "세미빌트인"
+ },
+ {
+  "cat": "fridge",
+  "name": "LG Fit&Max 냉장고 1도어 (냉동)",
+  "model": "Y324GB3S(베이지)",
+  "size": [
+   598,
+   670,
+   1860
+  ],
+  "type": "세미빌트인"
+ },
+ {
+  "cat": "fridge",
+  "name": "LG Fit&Max 냉장고 4도어 (김치)",
+  "model": "Z484GBB172(베이지)",
+  "size": [
+   835,
+   685,
+   860
+  ],
+  "type": "세미빌트인"
+ },
+ {
+  "cat": "fridge",
+  "name": "밀레 와인셀러 KWT2611Vi",
+  "model": "RFB-KWT2611VI",
+  "size": [
+   603,
+   610,
+   2127
+  ],
+  "badge": "NEW",
+  "type": "완전빌트인"
+ },
+ {
+  "cat": "fridge",
+  "name": "가게나우 와인셀러 610 RW466964",
+  "model": "RFB-RW466964",
+  "size": [
+   603,
+   608,
+   2125
+  ],
+  "badge": "NEW",
+  "type": "완전빌트인"
+ },
+ {
+  "cat": "fridge",
+  "name": "가게나우 냉장고 610 / 가게나우 냉동고 610",
+  "model": "RFB-RC462904 (610",
+  "badge": "NEW"
+ },
+ {
+  "cat": "fridge",
+  "name": "밀레 냉장고 762 K2801Vi / 냉동고 610 F2411Vi",
+  "model": "RFB-K2801VI",
+  "badge": "NEW"
+ }
+]
