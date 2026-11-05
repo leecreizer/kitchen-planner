@@ -1,7 +1,7 @@
 // 방 3D — 바닥 · 벽(개구부 구멍) · 천장 · 출입문 · 창 · 벽 너머 공간(팬트리 · 다용도실 · 서브주방)
 // three 단위 m. 평면 (x, z) mm → three (x/1000, ·, z/1000).
 import * as THREE from 'three';
-import { texture } from './cabinet3d';
+import { textureOwn } from './cabinet3d';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { CEILING_LAMPS } from './scene';
 import { OPENING_INFO, livingOf, nextWall, prevWall, wallFrame, wallLength, type Design, type Opening, type WallId, type WallSpace } from './plan';
@@ -88,7 +88,7 @@ export function buildRoom(d: Design, surf: { floor?: Surf; wallOf?: (space: Wall
   // 바닥
   const fm = new THREE.MeshStandardMaterial({ color: '#cdb89b', roughness: 0.55 });
   // 무늬는 실제 위치(m) 기준 UV 로(joinPlanes) — 부엌 · 거실 바닥이 한 무늬로 이어진다
-  if (surf.floor) { const t = texture(base + surf.floor.map).clone(); t.repeat.set(1, 1); fm.map = t; fm.color.set('#ffffff'); }
+  if (surf.floor) { const t = textureOwn(base + surf.floor.map); t.repeat.set(1, 1); fm.map = t; fm.color.set('#ffffff'); }
   const floor = new THREE.Mesh(new THREE.PlaneGeometry(r.w * S, r.d * S), fm);
   floor.rotation.x = -Math.PI / 2; floor.position.set(r.w * S / 2, 0, r.d * S / 2); floor.receiveShadow = true;
   floor.name = 'floor';
@@ -104,7 +104,7 @@ export function buildRoom(d: Design, surf: { floor?: Surf; wallOf?: (space: Wall
   const wmFor = (L: number, space: WallSpace, key: string, H = r.h) => {
     const sf = surf.wallOf?.(space, key);
     if (!sf) return wm;
-    const m = wm.clone(); const t = texture(base + sf.map).clone();
+    const m = wm.clone(); const t = textureOwn(base + sf.map);
     t.repeat.set(L / 1000 / sf.size[0], H / 1000 / sf.size[1]); m.map = t; m.color.set('#ffffff');
     return m;
   };

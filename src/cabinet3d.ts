@@ -20,6 +20,15 @@ export function texture(url: string, srgb = true): THREE.Texture {
   }
   return t;
 }
+/** 반복(repeat)을 따로 잡아야 하는 텍스처 — 공유 텍스처를 clone() 하면 이미지가 오기 전 복제본이 「갱신 필요」만 달고 이미지가 비어
+ *  WebGPU 렌더러가 멈췄다(image === null 은 처리 못 함 — 느린 서버(GitHub Pages)에서 3D 가 통째로 빈 화면). 그래서 따로 불러온다(브라우저 캐시) */
+export function textureOwn(url: string, srgb = true): THREE.Texture {
+  const t = loader.load(url);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.anisotropy = 8;
+  if (srgb) t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
 
 const matCache = new Map<string, THREE.MeshStandardMaterial>();
 /** 재질 — 원본 재질 id(텍스처) 또는 색. 이름에 유광 · 거울 · 유리가 있으면 그에 맞춘다 */
