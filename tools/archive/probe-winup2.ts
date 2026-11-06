@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
-import { setReader, loadCatalog } from '../src/kjlLib';
-import { autoPlan } from '../src/autoplan';
-import { defaultDesign, type Design } from '../src/plan';
+import { setReader, loadCatalog } from '../../src/kjlLib';
+import { autoPlan } from '../../src/autoplan';
+import { defaultDesign, type Design } from '../../src/plan';
 setReader(async (p) => JSON.parse(readFileSync(`public/kjl/${p}`, 'utf-8')));
 const cat = await loadCatalog();
 const d = { ...defaultDesign(), layout: 'L' } as Design;

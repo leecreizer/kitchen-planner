@@ -4,10 +4,11 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { HDRLoader } from 'three/examples/jsm/loaders/HDRLoader.js';
 
-/** 창밖 풍경 — Poly Haven CC0 2K HDRI (붙박이장 플래너와 같은 파일). 실내 조명은 RoomEnvironment 그대로 — 풍경의 해가 「두 번째 해」가 되지 않게 배경으로만 */
+/** 창밖 풍경 — Poly Haven CC0 HDRI 1K(1024×512). 2K 와 같은 시점 비교에서 정면 · 3D 보기는 차이가 잡음 수준이라 1K(6.5MB → 1.7MB),
+ *  창에 바짝 붙어 볼 때만 조금 흐리다. 실내 조명은 RoomEnvironment 그대로 — 풍경의 해가 「두 번째 해」가 되지 않게 배경으로만 */
 export const OUTDOOR: Record<string, { label: string; file: string; gain: number; rot: number }> = {
-  city: { label: '도시', file: 'modern_buildings_2_2k.hdr', gain: 1.6, rot: 0 },
-  park: { label: '공원', file: 'park_parking_2k.hdr', gain: 4, rot: 0 },
+  city: { label: '도시', file: 'modern_buildings_2_1k.hdr', gain: 1.6, rot: 0 },
+  park: { label: '공원', file: 'park_parking_1k.hdr', gain: 4, rot: 0 },
 };
 import { nearestWall, wallFrame, type Design, type WallId } from './plan';
 const wallFrameOf = (d: Design, w: WallId) => wallFrame(d.room, w) as { o: number[]; dir: number[]; n: number[] };
@@ -15,10 +16,11 @@ import type { Item } from './autoplan';
 import { slotMovable } from './reorder';
 import type { RoomObj } from './room3d';
 import { startEmbed, type EmbedKind, type EmbedHandle, type LightPayload } from './render/embed';
-import { createRaster, type Raster, type RasterRenderer } from './render/raster';
+import { createRaster, type PostSettings, type Raster, type RasterRenderer } from './render/raster';
 import { MeshPhysicalNodeMaterial, type WebGPURenderer } from 'three/webgpu';
 import { lights } from 'three/tsl';
 import { bakeSpaceAO, clearSpaceAO, SPACE_FLAG, type LightIn } from './render/spaceao';
+import { disposeTree, isShared, shared } from './dispose';
 type GPT = typeof import('./render/gpupt');
 let gpt: GPT | null = null;
 const loadGpt = () => import('./render/gpupt').then((m) => (gpt = m));
@@ -60,6 +62,19 @@ export function kelvinColor(k: number): THREE.Color {
 const WINDOW_NITS = 1, DOWNLIGHT_CD = 6, MAIN_CD = 8;
 /** 조명 패널 환경광 × — 실내 환경맵은 가림 없이 고르게 비춰 공간감이 사라졌다(붙박이장 플래너와 같은 값) */
 const RASTER_ENV = 0.85;
+/** 끈 실사 엔진을 놓기까지(ms) — 그 안에 다시 켜면 셰이더 준비 없이 바로 이어진다 */
+const RELEASE_MS = 60_000;
+
+/* 성능 단계 — PC 에 맞춰 화질을 조절한다(사용자 2026-11-06 「저사양 노트북에서도 쾌적하게 · PC 성능에 따른 조절 버튼」).
+ * 실측(RTX 4080 · 1370×1080): 기본 후처리 한 장 GPU 1.84ms, 간접광(SSGI) 끄면 1.31, 후처리 다 끄면 0.84 — 내장 그래픽은 대역폭이 10~25 배 낮아
+ * 기본이면 돌릴 때 초당 15~35장(추정). CPU 4배 느리게 · 4코어 흉내에서 공간 라이트맵 굽기 3.2 → 11.8초.
+ * 고품질 = 지금 기본 그대로 · 보통 = 간접광 보통 · 화면 배율 1.25 · 저사양 = 간접광 끄고 GTAO 그늘만 · 노이즈 제거 · 빛 번짐 끔 · 배율 1 · 라이트맵 성긴 판 */
+export type Quality = 'high' | 'mid' | 'low';
+export const QUALITY_TIERS: Record<Quality, { label: string; dpr: number; shadow: number; lampShadow: number; lightmap: { cell: number; bounce: number }; post: Partial<PostSettings> }> = {
+  high: { label: '고품질', dpr: 1.5, shadow: 4096, lampShadow: 2048, lightmap: { cell: 0.04, bounce: 24 }, post: { ssgi: true, aoKind: 'both', quality: 'high', giRes: 'half', denoise: true, traa: true, bloom: true } },
+  mid: { label: '보통', dpr: 1.25, shadow: 2048, lampShadow: 2048, lightmap: { cell: 0.05, bounce: 16 }, post: { ssgi: true, aoKind: 'both', quality: 'mid', giRes: 'half', denoise: true, traa: true, bloom: true } },
+  low: { label: '저사양', dpr: 1, shadow: 2048, lampShadow: 1024, lightmap: { cell: 0.08, bounce: 10 }, post: { ssgi: true, aoKind: 'gtao', quality: 'low', denoise: false, traa: true, bloom: false } },
+};
 /** 화면에서만 숨기는 층 — 카메라 쪽 벽 · 위에서 본 천장. 그림자 · 실내 환경맵 · 라이트맵에는 그대로 남아 빛이 벽 · 천장을 뚫지 않는다 */
 const HIDE_LAYER = 1;
 const setLayer = (o: THREE.Object3D, hide: boolean) => {
@@ -112,7 +127,9 @@ export class Stage {
   private downAt = { x: 0, y: 0 };
   private far(e: PointerEvent) { return Math.hypot(e.clientX - this.downAt.x, e.clientY - this.downAt.y) >= 4; }
   /** 아일랜드 회전 고리 — 고른 아일랜드 둘레 바닥(붙박이장 플래너 가구 고리와 같은 모양). 고리를 잡아 끌면 90° 단위로 딸깍 돈다 */
-  private islRing?: { c: [number, number]; R: number; g: THREE.Group; y: number; step: number };
+  private islRing?: { c: [number, number]; R: number; g: THREE.Group; y: number; step: number; kp: THREE.Vector3 };
+  /** 회전 고리 옆 지금 각도(사용자 지시 2026-11-06 「선택 회전 시 현재 각도가 안 보인다 — 부엌도 같은 기능」) — 손잡이 바깥에 띄우는 화면 글자. 고리와 함께 돈다 */
+  private ringLabel?: HTMLDivElement;
   private ringDrag?: { a0: number; deg: number };
   /** 회전 고리 끌기 — 끌기 시작 대비 회전(도, three rotation.y 방향 · 90 단위) */
   onRotateIsland?: (deg: number, done: boolean) => void;
@@ -123,8 +140,10 @@ export class Stage {
   onDragHob?: (p: [number, number], p0: [number, number], done: boolean) => void;
   private hobDrag?: { p0: [number, number]; p: [number, number]; moved: boolean };
   /** 고리 보이기 — 가운데 · 반지름 (mm) · 손잡이 방향(atan2(x, z), 장 앞면 쪽). null 이면 숨김 */
-  setIslandRing(r: { c: [number, number]; R: number; knob: number; y?: number; step?: number } | null) {
-    if (this.islRing) { this.scene.remove(this.islRing.g); this.islRing.g.traverse((o) => { (o as THREE.Mesh).geometry?.dispose(); }); this.islRing = undefined; }
+  setIslandRing(r: { c: [number, number]; R: number; knob: number; y?: number; step?: number; deg?: number } | null) {
+    if (this.ringLabel) this.ringLabel.hidden = true;
+    if (this.islRing) { this.scene.remove(this.islRing.g); this.islRing.g.traverse((o) => { const m = o as THREE.Mesh; m.geometry?.dispose(); (m.material as THREE.Material | undefined)?.dispose(); }); this.islRing = undefined; }
+    this.invalidate();
     if (!r) return;
     const mat = new THREE.MeshBasicMaterial({ color: '#2f6bff', transparent: true, opacity: 0.8, depthTest: false, depthWrite: false, side: THREE.DoubleSide });
     const g = new THREE.Group();
@@ -140,7 +159,31 @@ export class Stage {
     const y = (r.y ?? 20) * S;
     g.position.set(r.c[0] * S, y, r.c[1] * S);
     this.scene.add(g);
-    this.islRing = { c: r.c, R: r.R, g, y, step: r.step ?? 90 };
+    // 각도 글자 자리 — 손잡이 바깥(고리 무리 좌표). 고리가 돌면 따라 돈다
+    const kp = new THREE.Vector3((R + 0.26) * Math.sin(r.knob), 0.002, (R + 0.26) * Math.cos(r.knob));
+    this.islRing = { c: r.c, R: r.R, g, y, step: r.step ?? 90, kp };
+    if (r.deg != null) this.setRingLabel(r.deg);
+  }
+  /** 회전 고리 옆 각도 글자 — 0~359° 로 */
+  setRingLabel(deg: number) {
+    if (!this.islRing) return;
+    if (!this.ringLabel) {
+      const el = document.createElement('div'); el.className = 'rot-deg'; el.hidden = true;
+      this.host.append(el); this.ringLabel = el;
+    }
+    this.ringLabel.textContent = `${((Math.round(deg) % 360) + 360) % 360}°`;
+    this.ringLabel.hidden = false;
+    this.placeRingLabel();
+  }
+  private placeRingLabel() {
+    const r = this.islRing, el = this.ringLabel;
+    if (!r || !el || el.hidden) return;
+    r.g.updateMatrixWorld();
+    const v = r.g.localToWorld(r.kp.clone()).project(this.camera);
+    const off = v.z > 1 || Math.abs(v.x) > 1.05 || Math.abs(v.y) > 1.05;
+    el.style.visibility = off ? 'hidden' : '';
+    const cv = this.renderer.domElement;
+    el.style.left = `${((v.x + 1) / 2) * cv.clientWidth}px`; el.style.top = `${((1 - v.y) / 2) * cv.clientHeight}px`;
   }
   /** 마우스가 고리(또는 손잡이) 위면 그 방향 각, 아니면 null */
   private ringAt(e: PointerEvent, any = false): number | null {
@@ -154,8 +197,9 @@ export class Stage {
   private arrowDrag?: { i: number; s0: number; d: number };
   onDragWallArrow?: (i: number, delta: number, done: boolean) => void;
   setWallArrows(list: { p: [number, number]; dir: [number, number]; y?: number }[]) {
-    for (const a of this.wallArrows) this.scene.remove(a.g);
+    for (const a of this.wallArrows) { this.scene.remove(a.g); a.g.traverse((o) => { const m = o as THREE.Mesh; m.geometry?.dispose(); (m.material as THREE.Material | undefined)?.dispose(); }); }
     this.wallArrows = [];
+    this.invalidate();
     for (const a of list) {
       const mat = new THREE.MeshBasicMaterial({ color: '#2f6bff', transparent: true, opacity: 0.9, depthTest: false });
       const g = new THREE.Group();
@@ -224,11 +268,12 @@ export class Stage {
       p = new HDRLoader().loadAsync(`${import.meta.env.BASE_URL}env/${o.file}`).then((t) => { t.mapping = THREE.EquirectangularReflectionMapping; return t; });
       this.hdr.set(key, p);
     }
-    void p.then((t) => { this.scene.background = t; this.outsideGain = o.gain; this.scene.backgroundIntensity = 0.9 * this.skyK * o.gain; this.scene.backgroundRotation.set(0, o.rot * Math.PI / 180, 0); });
+    void p.then((t) => { this.scene.background = t; this.outsideGain = o.gain; this.scene.backgroundIntensity = 0.9 * this.skyK * o.gain; this.scene.backgroundRotation.set(0, o.rot * Math.PI / 180, 0); this.envDirty = true; this.invalidate(); });
   }
   /** 고른 것 표시 — 반투명 파란 상자 + 굵은 테두리 (가려도 보이게 위에 그림) */
   highlight(obj: THREE.Object3D | THREE.Box3 | null) {
-    if (this.selBox) { this.scene.remove(this.selBox); this.selBox = undefined; }
+    if (this.selBox) { this.scene.remove(this.selBox); this.selBox.traverse((o) => { const m = o as THREE.Mesh; m.geometry?.dispose(); (m.material as THREE.Material | undefined)?.dispose(); }); this.selBox = undefined; }
+    this.invalidate();
     if (!obj) return;
     const b = obj instanceof THREE.Box3 ? obj.clone() : new THREE.Box3().setFromObject(obj);
     b.expandByScalar(0.008);
@@ -253,6 +298,54 @@ export class Stage {
   onPickOpening?: (id: string | null) => void;
   getDesign!: () => Design;
 
+  /* ───────── 필요할 때만 그리기 ─────────
+   * 가만히 있으면 그리지 않는다(사용자 지시 2026-11-06 「아무것도 안 할 때는 그리지 말고」). 예전엔 매 프레임 후처리 전체와
+   * 그림자 맵 2장을 다시 그렸다(가만히 2초에 120장 · 프레임당 드로우콜 1,360). 무언가 바뀌면 invalidate() — 시간 누적(TRAA · SSGI · GTAO)이
+   * 가라앉을 만큼(raster.settleFrames) 더 그리고 멈춘다. 캔버스는 마지막 그림을 그대로 보여 준다 */
+  private wake = 0;
+  /** 그림자 맵을 다시 그릴지 — 해 · 메인 조명 그림자 맵은 시점과 무관해 카메라만 돌 땐 그대로 쓴다. 물체 · 빛이 바뀔 때만 */
+  private shadowDirty = true;
+  private lastView = new THREE.Matrix4();
+  private lastProj = new THREE.Matrix4();
+  /** 화면이 바뀌었다 — shadows = 물체 · 빛도 바뀌어 그림자 맵까지 다시 */
+  invalidate(shadows = false) {
+    this.wake = Math.max(this.wake, this.raster.settleFrames + 2);
+    if (shadows) this.shadowDirty = true;
+  }
+  /** 장면 속 물체를 끄는 중인지 — 그동안은 그림자도 따라가야 한다 */
+  private dragging() { return !!(this.itemDrag || this.islDrag || this.hobDrag || this.dinDrag || this.drag || this.ringDrag || this.arrowDrag); }
+
+  /* ───────── 성능 단계 ───────── */
+  quality: Quality = 'high';
+  /** 단계 바꾸기 — 화면 배율 · 그림자 맵 크기 · 라이트맵 굵기, post = 후처리 값까지(고르면 true. 시작할 땐 저장된 후처리를 그대로 두려고 false) */
+  setQuality(q: Quality, post: boolean) {
+    const t = QUALITY_TIERS[q];
+    this.quality = q;
+    this.renderer.setPixelRatio(Math.min(devicePixelRatio, t.dpr));
+    this.resize();
+    if (post) this.setPost(t.post);
+    // 그림자 맵 — 해는 방 크기 판단(setRoom)과 단계 상한 중 작은 쪽, 메인 조명은 단계 값
+    const sunMs = Math.min(this.sunMapWant, t.shadow);
+    if (this.sun.shadow.mapSize.x !== sunMs) { this.sun.shadow.mapSize.set(sunMs, sunMs); this.sun.shadow.map?.dispose(); (this.sun.shadow as { map: unknown }).map = null; }
+    for (const o of this.lamps.children) {
+      const l = o as THREE.SpotLight;
+      if (l.isSpotLight && l.castShadow && l.shadow.mapSize.x !== t.lampShadow) { l.shadow.mapSize.set(t.lampShadow, t.lampShadow); l.shadow.map?.dispose(); (l.shadow as { map: unknown }).map = null; }
+    }
+    this.frameDts.length = 0;
+    this.scheduleSpaceAO();
+    this.invalidate(true);
+  }
+  /** 방 크기로 정한 해 그림자 맵(단계 상한 전) */
+  private sunMapWant = 2048;
+  /* 돌릴 때 한 장 간격 — 이어서 그린 프레임 사이 시간(ms). 자동 단계가 이것으로 느린지 본다 */
+  private frameDts: number[] = [];
+  private lastRenderAt = 0;
+  private orbiting = false;
+  frameStats() {
+    const v = [...this.frameDts].sort((a, b) => a - b);
+    return { n: v.length, med: v.length ? v[v.length >> 1] : 0, p90: v.length ? v[Math.floor(v.length * 0.9)] : 0 };
+  }
+
   constructor(private host: HTMLElement) {
     this.raster = createRaster(this.scene, this.camera, this.sun);
     this.renderer = this.raster.renderer;
@@ -271,6 +364,8 @@ export class Stage {
     this.sun.shadow.mapSize.set(2048, 2048);
     this.sun.shadow.bias = -0.0004;
     this.sun.shadow.normalBias = 0.02;
+    // 그림자 맵은 물체 · 빛이 바뀔 때만 다시 그린다(frame 의 shadowDirty)
+    this.sun.shadow.autoUpdate = false;
     this.scene.add(this.sun, this.sun.target, this.lamps);
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
@@ -292,6 +387,19 @@ export class Stage {
       this.renderer.setAnimationLoop(() => this.frame());
     });
     this.controls.addEventListener('change', () => { if (this.mode === 'gpupt') gpt?.gpuPtCamera(); });
+    this.controls.addEventListener('start', () => { this.orbiting = true; });
+    this.controls.addEventListener('end', () => { this.orbiting = false; });
+    // 사용자 입력 — 무엇이 바뀔지 모르니 그린다. 3D 화면에서 카메라만 돌리면 그림자 맵은 그대로, 3D 밖(평면도 · 메뉴)에서 끌거나
+    // 값을 바꾸면 장 · 빛이 움직이므로 그림자 맵도. 버튼을 안 누른 마우스 이동(커서만 바뀜)은 무시
+    const poke = (e: Event) => {
+      if (e.type === 'pointermove' && !(e as PointerEvent).buttons) return;
+      const camOnly = e.target === el && (e.type === 'pointermove' || e.type === 'wheel') && !this.dragging();
+      this.invalidate(!camOnly);
+    };
+    for (const t of ['pointerdown', 'pointermove', 'pointerup', 'wheel', 'keydown', 'input', 'change']) window.addEventListener(t, poke, { capture: true, passive: true });
+    // 텍스처 · 모델 · HDR 을 다 받으면(비동기 — 입력이 끝난 뒤 도착한다) 다시 그린다
+    const lm = THREE.DefaultLoadingManager, prevProgress = lm.onProgress;
+    lm.onProgress = (url, loaded, total) => { prevProgress?.(url, loaded, total); this.invalidate(); };
   }
 
   resize() {
@@ -300,12 +408,15 @@ export class Stage {
     this.raster.setSize(w, h);
     this.camera.aspect = w / Math.max(1, h);
     this.camera.updateProjectionMatrix();
+    this.invalidate();
   }
 
   setRoom(r: RoomObj, d: Design) {
-    if (this.room) this.scene.remove(this.room.group);
+    const old = this.room;
+    if (old) this.scene.remove(old.group);
     this.room = r;
     this.scene.add(r.group);
+    if (old && old !== r) this.disposeRoom(old);
     if (this.lines) this.applyLines();
     this.sceneChanged();
     // 해 — 첫 창 바깥에서 비스듬히
@@ -349,7 +460,8 @@ export class Stage {
     const cam = this.sun.shadow.camera;
     cam.left = cam.bottom = -ext; cam.right = cam.top = ext; cam.near = 0.5; cam.far = 12 + ext * 2; cam.updateProjectionMatrix();
     // 넓어진 만큼 해상도도 — 텍셀이 너무 커지지 않게(방 전체 ~14m 에 4096 → 3.5mm)
-    const ms = ext > 5 ? 4096 : 2048;
+    this.sunMapWant = ext > 5 ? 4096 : 2048;
+    const ms = Math.min(this.sunMapWant, QUALITY_TIERS[this.quality].shadow);
     if (this.sun.shadow.mapSize.x !== ms) { this.sun.shadow.mapSize.set(ms, ms); this.sun.shadow.map?.dispose(); (this.sun.shadow as { map: unknown }).map = null; }
     // 천장 조명 — 격자 다운라이트. 지금은 끔(사용자: 천장 조명 일단 다 빼) — 다시 켜려면 CEILING_LAMPS
     this.lamps.clear();
@@ -361,7 +473,8 @@ export class Stage {
       const l = new THREE.SpotLight(0xffffff, cd, 0, angle, penumbra, 2);
       l.position.set(x, H, z); l.target.position.set(x, 0, z); l.userData.cd = cd;
       l.castShadow = shadow;
-      if (shadow) { l.shadow.mapSize.set(2048, 2048); l.shadow.camera.near = 0.1; l.shadow.camera.far = 8; l.shadow.bias = -0.0005; l.shadow.normalBias = 0.02; l.shadow.camera.layers.enableAll(); }
+      // 그림자 맵은 바뀔 때만, 그리고 켜져 있을 때만(frame) — three 는 castShadow 면 밝기 0 이어도 매 프레임 그림자 맵을 그린다
+      if (shadow) { const lm = QUALITY_TIERS[this.quality].lampShadow; l.shadow.mapSize.set(lm, lm); l.shadow.camera.near = 0.1; l.shadow.camera.far = 8; l.shadow.bias = -0.0005; l.shadow.normalBias = 0.02; l.shadow.camera.layers.enableAll(); l.shadow.autoUpdate = false; }
       this.lamps.add(l, l.target);
       return l;
     };
@@ -378,8 +491,19 @@ export class Stage {
     this.depthWindow();
     this.envDirty = true;
     this.scheduleSpaceAO();
+    this.invalidate(true);
   }
   private design?: Design;
+  /** 옛 방 놓기 — 방은 그릴 때마다 형상 · 재질 · 텍스처(바닥 · 벽지)를 새로 만든다(창을 끄는 동안엔 매 프레임). 라이트맵 사본은 원본으로 되돌린 뒤
+   *  사본만 놓는다(사본은 원본 텍스처 · 공간 라이트맵을 빌려 쓴다) */
+  private disposeRoom(old: RoomObj) {
+    const origOf = new Map<THREE.Material, THREE.Material>();
+    this.lmMats.forEach((c, o) => origOf.set(c, o));
+    old.group.traverse((o) => { const m = o as THREE.Mesh; const orig = m.material ? origOf.get(m.material as THREE.Material) : undefined; if (orig) m.material = orig; });
+    for (const c of this.lmMats.values()) c.dispose();
+    this.lmMats.clear();
+    disposeTree(old.group);
+  }
 
   /* ───────── 실내 환경맵 — 방 가운데서 큐브맵을 찍어 환경광 · 반사로(붙박이장 플래너와 같은 방식).
    *  찍을 때 앞서 찍은 환경맵이 벽을 밝히므로 두 번 찍으면 벽에서 튄 빛(1차 반사광)까지 담긴다 ───────── */
@@ -465,6 +589,7 @@ export class Stage {
   private shellLightmap(meshes: THREE.Mesh[], tex: THREE.Texture | null) {
     const origOf = new Map<THREE.Material, THREE.MeshStandardMaterial>();
     this.lmMats.forEach((c, o) => origOf.set(c, o as THREE.MeshStandardMaterial));
+    this.invalidate();
     if (!tex) { for (const m of meshes) { const o = origOf.get(m.material as THREE.Material); if (o) m.material = o; } this.envDirty = true; return; }
     let ls: ReturnType<typeof lights> | null = null;
     if (this.raster.kind === 'webgpu') {
@@ -488,24 +613,30 @@ export class Stage {
     }
     this.envDirty = true;
   }
-  /** 공간 라이트맵 다시 굽기 — 0.6초 모아서(끌기 · 연속 변경 중엔 미룬다). 실시간 화면에서만 */
+  /** 공간 라이트맵 다시 굽기 — 0.6초 모아서(끌기 · 연속 변경 중엔 미룬다). 실시간 화면에서만.
+   *  한 번에 하나씩 — 굽기(3~6초) 중에 다음 굽기가 시작되면 같은 작업자들의 응답 받는 곳을 덮어써 앞 굽기가 오류로 끝났다
+   *  (되돌리기를 빠르게 이어 누를 때 실측 2026-11-06). 앞 굽기가 끝난 뒤 그때의 방으로 굽는다 */
   private aoTimer = 0;
+  private aoRun: Promise<unknown> = Promise.resolve();
   scheduleSpaceAO() {
     clearTimeout(this.aoTimer);
     if (this.mode !== 'raster' || !this.raster.post.spaceAO || !this.room) return;
-    this.aoTimer = window.setTimeout(async () => {
-      try {
-        const info = await bakeSpaceAO(this.room!.group, this.kitchen ? [this.kitchen] : [], this.lightIn(), this.insideBox(), (ms, tex) => this.shellLightmap(ms, tex), (ms) => this.shellLightmap(ms, null));
-        if (info) { console.info('[공간 라이트맵]', info); this.envDirty = true; }
-      } catch (e) { console.warn('[라이트맵] 실패', e); }
-    }, 600);
+    this.aoTimer = window.setTimeout(() => { this.aoRun = this.aoRun.then(() => this.bakeAO()); }, 600);
+  }
+  private async bakeAO() {
+    if (this.mode !== 'raster' || !this.raster.post.spaceAO || !this.room) return;
+    try {
+      // 성능 단계 — 저사양은 성긴 판(텍셀 80mm · 튄 빛 광선 10): 굽는 시간이 4코어 노트북에서 몇 배 준다
+      const info = await bakeSpaceAO(this.room.group, this.kitchen ? [this.kitchen] : [], this.lightIn(), this.insideBox(), (ms, tex) => this.shellLightmap(ms, tex), (ms) => this.shellLightmap(ms, null), QUALITY_TIERS[this.quality].lightmap);
+      if (info) { console.info('[공간 라이트맵]', info); this.envDirty = true; this.invalidate(); }
+    } catch (e) { console.warn('[라이트맵] 실패', e); }
   }
 
   /* ───────── 조명 패널 ───────── */
   private saveLight() { try { localStorage.setItem(LIGHT_KEY, JSON.stringify({ sun: this.sunCfg, room: this.roomCfg, shadow: this.shadowCfg, sunUser: this.sunUser })); } catch { /* 이번 화면엔 반영 */ } }
-  setSun(p: Partial<Sun>) { if ('azimuth' in p || 'elevation' in p) this.sunUser = true; Object.assign(this.sunCfg, p); this.applySun(); this.saveLight(); this.pushLight(); }
-  setRoomLight(p: Partial<RoomLight>) { Object.assign(this.roomCfg, p); this.applyRoom(); this.saveLight(); this.pushLight(); }
-  setShadow(p: Partial<ShadowCfg>) { Object.assign(this.shadowCfg, p); this.applySun(); this.saveLight(); }
+  setSun(p: Partial<Sun>) { if ('azimuth' in p || 'elevation' in p) this.sunUser = true; Object.assign(this.sunCfg, p); this.applySun(); this.saveLight(); this.pushLight(); this.invalidate(true); }
+  setRoomLight(p: Partial<RoomLight>) { Object.assign(this.roomCfg, p); this.applyRoom(); this.saveLight(); this.pushLight(); this.invalidate(true); }
+  setShadow(p: Partial<ShadowCfg>) { Object.assign(this.shadowCfg, p); this.applySun(); this.saveLight(); this.invalidate(true); }
   /** 해를 방 가운데 기준으로 처음 자리로 — 방위 · 고도를 창 바깥 쪽으로 다시 */
   resetSunAuto() { this.sunUser = false; this.saveLight(); }
   private applySun() {
@@ -544,6 +675,7 @@ export class Stage {
     this.raster.setPost(p); this.applyRoom();
     if ('spaceAO' in p) { if (this.raster.post.spaceAO) this.scheduleSpaceAO(); else clearSpaceAO(); }
     if ('spaceLMStr' in p) for (const c of this.lmMats.values()) c.lightMapIntensity = this.raster.post.spaceLMStr ?? 1;
+    this.invalidate();
   }
   private pushLight() {
     if (this.mode !== 'bake' && this.mode !== 'surfel') return;
@@ -554,18 +686,23 @@ export class Stage {
   setSplash(s: THREE.Object3D) {
     if (!this.kitchen) return;
     const old = this.kitchen.getObjectByName('splash');
-    if (old) this.kitchen.remove(old);
+    if (old) { this.kitchen.remove(old); if (old !== s) disposeTree(old); }
     this.kitchen.add(s);
+    this.invalidate(true);
   }
 
   setKitchen(k: THREE.Object3D) {
-    if (this.kitchen) this.scene.remove(this.kitchen);
+    const old = this.kitchen;
+    if (old) this.scene.remove(old);
     this.kitchen = k;
     this.scene.add(k);
+    // 옛 부엌 놓기 — 장 형상 · 재질 캐시(shared)는 남기고 나머지(상판 · 걸레받이 · 찬넬 · EP 등 매번 새로 만든 것)와 렌더러 내부 객체를
+    if (old && old !== k) disposeTree(old);
     if (this.lines) this.applyLines();
     this.sceneChanged();
     this.envDirty = true;
     this.scheduleSpaceAO();
+    this.invalidate(true);
   }
 
   /** 보기 — 정면 = 트인 쪽(거실)에서 안을 봄. 평면도도 트인 쪽이 아래라 방향이 같다 (트인 쪽 없으면 앞벽 쪽) */
@@ -602,8 +739,8 @@ export class Stage {
   /* ───────── 보기 — 재질 / 재질+라인 (모서리 선을 메시 자식으로 — 도어와 같이 움직인다) ───────── */
   lines = false;
   private edgeCache = new WeakMap<THREE.BufferGeometry, THREE.EdgesGeometry>();
-  private edgeMat = new THREE.LineBasicMaterial({ color: 0x2b2b2b });
-  setLines(on: boolean) { this.lines = on; this.applyLines(); }
+  private edgeMat = shared(new THREE.LineBasicMaterial({ color: 0x2b2b2b }));
+  setLines(on: boolean) { this.lines = on; this.applyLines(); this.invalidate(); }
   private applyLines() {
     for (const root of [this.kitchen, this.room?.group]) {
       if (!root) continue;
@@ -616,7 +753,8 @@ export class Stage {
         if (old) m.remove(old);
         if (!this.lines) continue;
         let eg = this.edgeCache.get(m.geometry);
-        if (!eg) { eg = new THREE.EdgesGeometry(m.geometry, 28); this.edgeCache.set(m.geometry, eg); }
+        // 공유 형상(장 캐시)의 모서리 선은 다음 부엌도 같이 쓴다 — 옛 부엌을 놓을 때 건너뛰게
+        if (!eg) { eg = new THREE.EdgesGeometry(m.geometry, 28); if (isShared(m.geometry)) shared(eg); this.edgeCache.set(m.geometry, eg); }
         const l = new THREE.LineSegments(eg, this.edgeMat);
         l.name = 'edge-lines'; l.raycast = () => {};
         m.add(l);
@@ -673,14 +811,30 @@ export class Stage {
       const h = await startEmbed(kind, this.host, [this.room.group, this.kitchen], this.camera, this.controls.target, this.lightPayload(), (t) => this.onStatus?.(t));
       this.embeds.set(key, h);
       h.setActive(this.mode === kind && `${kind}|${this.stateKey()}` === key);
-      // 엔진 화면마다 GPU 를 따로 쓴다 — 최근 3개만
-      while (this.embeds.size > 3) { const [k0, h0] = this.embeds.entries().next().value!; h0.dispose(); this.embeds.delete(k0); }
+      // 엔진 화면마다 GPU 장치 · 장면 · 라이트맵을 따로 쓴다 — 지금 것 + 직전 것 하나만(예전 3개)
+      while (this.embeds.size > 2) { const [k0, h0] = this.embeds.entries().next().value!; h0.dispose(); this.embeds.delete(k0); }
     } finally {
       this.embedPending.delete(key);
       if (sel) sel.visible = true;
     }
   }
+  /* 안 쓰는 실사 엔진 놓기 — 떠난 뒤 RELEASE_MS 동안 다시 안 켜면 GPU 자원(장치 · 장면 · 누적 버퍼 · 신경망)을 놓는다.
+   * 끈 엔진은 그리기는 멈추지만(MuTracer 멈춤 · 굽기/서펠 화면 숨김) 메모리는 그대로 잡고 있었다. 곧바로 다시 켜면 그대로 이어진다 */
+  private releaseTimer = 0;
+  private releaseIdle() {
+    clearTimeout(this.releaseTimer);
+    this.releaseTimer = window.setTimeout(() => {
+      if (this.mode !== 'mutracer') mt?.disposeMutracer();
+      if (this.mode !== 'gpupt') gpt?.disposeGpuPt();
+      if (this.mode !== 'bake' && this.mode !== 'surfel') { this.embeds.forEach((h) => h.dispose()); this.embeds.clear(); }
+    }, RELEASE_MS);
+  }
+  private modeReq = 0;
   async setMode(mode: RenderMode) {
+    // 늦게 끝난 앞 요청이 뒤 요청을 덮지 않게 — MuTracer 를 받는 동안 「실시간」을 누르면, 받은 뒤 MuTracer 로 바뀌어
+    // 메뉴는 실시간인데 경로 추적이 계속 돌았다
+    const req = ++this.modeReq;
+    this.invalidate(true);
     // 실시간 ↔ ④ 고품질은 같은 화면 — 후처리 두 개만 켜고 끈다
     if ((mode === 'raster' || mode === 'hq') && this.mode === 'raster') {
       if (mode === 'hq' && this.raster.kind !== 'webgpu') { this.onStatus?.('이 방식은 WebGPU 화면에서만 됩니다'); return; }
@@ -693,6 +847,7 @@ export class Stage {
     const m = mode === 'mutracer' ? await loadMt() : mt;
     if (mode === 'gpupt') await loadGpt();
     const sky = mode === 'mutracer' || mode === 'gpupt' ? await this.loadSky() : undefined;
+    if (req !== this.modeReq) return;
     // ④ 실시간 고품질 = 실시간 + 화면 반사 · 접촉 그림자, 실시간(기본)은 둘을 끈다(붙박이장 플래너와 같음)
     const hq = mode === 'hq';
     if (mode === 'raster' || hq) { if (!!this.raster.post.ssr !== hq || !!this.raster.post.sss !== hq) this.raster.setPost({ ssr: hq, sss: hq }); }
@@ -704,6 +859,8 @@ export class Stage {
     if (this.mode === 'raster' || this.mode === 'hq') this.rasterEnv = { env: this.scene.environment, intensity: this.scene.environmentIntensity };
     if (hq) mode = 'raster';
     this.mode = mode;
+    this.releaseIdle();
+    this.invalidate(true);
     // three 캔버스는 투명하게 두고 마우스는 그대로 받는다(궤도 회전) — MuTracer 가 밑 캔버스에 그린다
     this.renderer.domElement.style.opacity = mode === 'mutracer' ? '0' : '';
     // 경로 추적은 손을 떼면 바로 멈춰야 수렴을 시작한다
@@ -727,10 +884,19 @@ export class Stage {
   }
 
   private frame() {
-    this.controls.update();
-    // 카메라 쪽 벽 · 천장 숨기기 — 그 벽에 붙은 장 · 상판 · 마감도 같이
+    // 카메라가 움직였으면(손 · 관성 · 코드로 옮긴 시점) 그린다
+    let moved = this.controls.update();
+    this.placeRingLabel();
+    const cam = this.camera;
+    cam.updateMatrixWorld();
+    if (!cam.matrixWorld.equals(this.lastView) || !cam.projectionMatrix.equals(this.lastProj)) { this.lastView.copy(cam.matrixWorld); this.lastProj.copy(cam.projectionMatrix); moved = true; }
+    if (moved) this.invalidate();
+    // 실내 환경맵은 실시간 화면에서만 다시 찍는다 — 실사 모드에선 표시가 남아 있어도 그릴 이유가 아니다(⑤ 경로 추적이 다 그린 뒤에도 계속 그렸다)
+    if (this.envDirty && this.mode === 'raster') this.invalidate();
+    // 카메라 쪽 벽 · 천장 숨기기 — 그 벽에 붙은 장 · 상판 · 마감도 같이. 시점이 바뀌었거나 그릴 일이 있을 때만
+    // (예전엔 가만히 있어도 매 틱 방 · 부엌을 훑었다 — 저사양 노트북에서 쉬는 동안에도 CPU 를 썼다)
     const cp = this.camera.position;
-    if (this.room) {
+    if (this.room && (moved || this.wake > 0)) {
       const shown = new Map<number, boolean>();
       const live = this.mode === 'raster';
       const hide = (o: THREE.Object3D, on: boolean) => { if (live) { o.visible = true; setLayer(o, !on); } else o.visible = on; };
@@ -753,9 +919,27 @@ export class Stage {
         else if (o.name === 'roof-shadow') { o.visible = live; setLayer(o, true); }
       });
     }
-    if (this.mode === 'gpupt') { gpt?.renderGpuPt(); return; }
+    // ⑤ 경로 추적 — 다 쌓이고 노이즈 제거까지 끝나면 같은 그림을 다시 내보내지 않는다(예전엔 매 프레임 FSR 확대 + 화면 복사)
+    if (this.mode === 'gpupt') {
+      if (this.wake > 0 || !gpt?.gpuPtDone()) { if (this.wake > 0) this.wake--; gpt?.renderGpuPt(); }
+      return;
+    }
+    // MuTracer · 굽기 · 서펠은 제 캔버스에 따로 그린다 — 가려진 실시간 화면은 그리지 않는다(예전엔 그동안에도 매 프레임 그렸다)
+    if (this.mode !== 'raster' || this.wake <= 0) return;
+    this.wake--;
+    if (this.shadowDirty) {
+      this.shadowDirty = false;
+      this.sun.shadow.needsUpdate = true;
+      // 꺼진(밝기 0) 조명은 그림자 맵을 그리지 않는다 — 예전엔 천장 조명 「없음」이어도 메인 조명 그림자 맵(2048²)을 매 프레임 그렸다
+      for (const o of this.lamps.children) { const l = o as THREE.SpotLight; if (l.isSpotLight && l.castShadow && l.intensity > 0) l.shadow.needsUpdate = true; }
+    }
     if (this.envDirty && this.raster.ready && performance.now() - this.envAt > 100) this.updateEnv();
-    if (this.raster.ready) this.raster.render();
+    if (!this.raster.ready) return;
+    this.raster.render();
+    // 사용자가 3D 를 돌리는 동안 이어서 그린 프레임 사이 간격 — 처음 열 때 모델을 읽느라 느린 프레임 · 쉬었다 다시 그린 첫 장(간격 0.25초 넘음)은 뺀다. 최근 90장
+    const now = performance.now();
+    if (this.orbiting && moved && this.lastRenderAt && now - this.lastRenderAt < 250) { this.frameDts.push(now - this.lastRenderAt); if (this.frameDts.length > 90) this.frameDts.shift(); }
+    this.lastRenderAt = now;
   }
 
   private ndc(e: PointerEvent) {

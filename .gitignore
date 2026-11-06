@@ -3,3 +3,7 @@ node_modules
 dist
 *.log
 .pages
+
+# 프롬프트 AI 키(서버 쪽) — 올리지 않는다
+.env.local
+*.local

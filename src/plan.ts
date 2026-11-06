@@ -206,10 +206,20 @@ export function defaultDesign(): Design {
 }
 
 const KEY = 'kitchen-planner.design.v1';
+/** 저장해 둔 설계(브라우저 · 설계 파일)를 지금 형식으로 — 없는 항목은 기본값, 예전 형식(출입문 · 트인 벽 위 개구부)은 고친다 */
+export function normalizeDesign(raw: object): Design {
+  const d = { ...defaultDesign(), ...raw } as Design;
+  d.islandCfg ??= { len: 2400, over: 300 };
+  if (d.openWall === undefined) d.openWall = 3;
+  d.wing ??= { a: 0, b: 0 };
+  d.openings = (d.openings ?? []).filter((o) => o.kind !== 'door');
+  for (const o of d.openings) if (o.wall === d.openWall) { o.wall = ((o.wall + 1) % 4) as WallId; clampOpening(o, d.room); }
+  return d;
+}
 export function loadDesign(): Design {
   try {
     const s = localStorage.getItem(KEY);
-    if (s) { const d = { ...defaultDesign(), ...JSON.parse(s) } as Design; d.islandCfg ??= { len: 2400, over: 300 }; if (d.openWall === undefined) d.openWall = 3; d.wing ??= { a: 0, b: 0 }; d.openings = d.openings.filter((o) => o.kind !== 'door'); for (const o of d.openings) if (o.wall === d.openWall) { o.wall = ((o.wall + 1) % 4) as WallId; clampOpening(o, d.room); } return d; }
+    if (s) return normalizeDesign(JSON.parse(s));
   } catch { /* 저장 못 읽으면 기본 */ }
   return defaultDesign();
 }

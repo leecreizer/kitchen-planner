@@ -1,20 +1,24 @@
 // 부엌 셀프 설계 — 단계 패널 · 자동 배치 · 3D · 평면도를 잇는다
 import { applyNonStandard, autoPlan, upperBottomOf, FRIDGE_SPEC, fridgeSpec, STYLE_LABEL, widthsOf, type Candidate, type Frame, type Item } from './autoplan';
 import { buildKitchen, buildSplashes, setDoors, type KitchenObj } from './kitchen3d';
-import { loadCatalog, texUrl, type DoorDef, type GradeDef, type KitchenCatalog, type ModuleDef } from './kjlLib';
+import { doorBroken, doorGaps, loadCatalog, texUrl, usableDoors, type DoorDef, type GradeDef, type KitchenCatalog, type ModuleDef } from './kjlLib';
 import { DINING_SETS, DINING_SHAPES, buildDining, diningOf, diningPlace } from './dining3d';
 import { APPLIANCES, APPLIANCE_CATS, DOOR_MISSING, applianceOf, counterLabel, doorLabel, type ApplianceCat } from './catalog';
 import { PlanView } from './plan2d';
 import {
-  FIX_LABEL, FRIDGE_COLORS, ISLAND_LIMITS, ISLAND_STYLES, SPLASH_DEFAULT, LIVING_LIMITS, OPENING_INFO, WALL_NAMES, livingOf, nextWall, prevWall, viewWalls, wallName, clampOpening, nearestWall, wallFrame, loadDesign, newOpening, saveDesign, wallLength, wallpaperOf,
+  FIX_LABEL, FRIDGE_COLORS, ISLAND_LIMITS, ISLAND_STYLES, SPLASH_DEFAULT, LIVING_LIMITS, OPENING_INFO, WALL_NAMES, livingOf, nextWall, prevWall, viewWalls, wallName, clampOpening, nearestWall, wallFrame, loadDesign, newOpening, saveDesign as storeDesign, wallLength, wallpaperOf,
   type Design, type FixKey, type LayoutKind, type Opening, type OpeningKind, type StyleKind, type WallId, type WallSpace, type IslandStyle, type SplashCfg,
 } from './plan';
 import { buildRoom } from './room3d';
-import { CEILING_LIGHTS, OUTDOOR, Stage, type CeilingLight, type RenderMode, type RoomLight, type Sun, type ViewKind } from './scene';
+import { CEILING_LIGHTS, OUTDOOR, QUALITY_TIERS, Stage, type CeilingLight, type Quality, type RenderMode, type RoomLight, type Sun, type ViewKind } from './scene';
 import { POST_DEFAULTS, type PostSettings } from './render/raster';
 import * as THREE from 'three';
 import { applyPrompt } from './prompt';
 import { byPriority, nudge, rowGroup, slotGroup, slotLayout, slotMovable } from './reorder';
+import { decode, encode, fromFile, History, toFile, type Snapshot } from './project';
+import { bomCsv, bomGaps, buildBom } from './bom';
+import { AI_MODELS, aiDesign, aiStatus, type AiProvider } from './ai';
+import pkg from '../package.json';
 
 const $ = <T extends HTMLElement = HTMLElement>(s: string) => document.querySelector(s) as T;
 const BASE = import.meta.env.BASE_URL + 'kjl/';
@@ -28,13 +32,36 @@ let buildToken = 0;
 let lastKitchen: KitchenObj | null = null;
 let picked: Item | null = null;
 
+/* ───────── 되돌리기 · 다시 하기 · 자동 저장 ─────────
+ * 바뀐 상태(설계 + 지금 배치안)를 글로 쌓는다 — 되돌리기 · 다시 하기 각 50번(사용자 2026-11-06).
+ * 바뀔 때마다 부르지 않고 0.4초 모아서 한 번(끄는 중이면 놓은 뒤에) — 끌기 한 번 · 입력 한 번이 한 단계.
+ * 같은 상태를 브라우저에도 둔다(PLAN_KEY) — 새로고침해도 직접 고친 장(폭 · 교체 · 추가 · 빼기)이 남는다. 예전엔 설계만 남아 자동 배치로 돌아갔다 */
+const hist = new History(50);
+const PLAN_KEY = 'kitchen-planner.plan';
+let commitTimer = 0, pressed = false, restoring = false;
+window.addEventListener('pointerdown', () => { pressed = true; }, true);
+for (const t of ['pointerup', 'pointercancel', 'blur']) window.addEventListener(t, () => { pressed = false; }, true);
+function scheduleCommit() { clearTimeout(commitTimer); commitTimer = window.setTimeout(commit, 400); }
+function commit() {
+  commitTimer = 0;
+  if (restoring) return;
+  if (pressed) { scheduleCommit(); return; }
+  const s = encode({ design: d, plan: current });
+  hist.record(s);
+  try { localStorage.setItem(PLAN_KEY, s); } catch { /* 저장 못 해도 화면은 그대로 */ }
+  renderHistory();
+}
+/** 설계 저장(브라우저) — 바뀌었으니 되돌리기 단계도 */
+function saveDesign(dd: Design) { storeDesign(dd); scheduleCommit(); }
+
 const grade = (): GradeDef => cat.grades.find((g) => g.id === d.grade) ?? cat.grades[1];
 if (!cat.grades.some((g) => g.id === d.grade)) d.grade = 'e500';
-if (!grade().doors.some((x) => x.obs === d.door)) d.door = grade().doors[0].obs;
+if (!grade().doors.some((x) => x.obs === d.door)) d.door = usableDoors(grade())[0].obs;
 if (!cat.floors.some((x: { id: string }) => x.id === d.floor)) d.floor = cat.floors[0].id;
 if (!cat.walls.some((x: { id: string }) => x.id === d.wallpaper)) d.wallpaper = '';
 
 const stage = new Stage($('#three'));
+(window as any).__stage = stage;   // 콘솔·시험 도구용
 stage.getDesign = () => d;
 const plan = new PlanView($('#plan'));
 
@@ -72,6 +99,8 @@ async function rebuildKitchen() {
   if (picked) pick(current?.items.includes(picked) ? picked : null);
   say(`${grade().label} · 장 ${k.items.length}개 · ${Math.round(performance.now() - t0)}ms`);
   setTimeout(() => { if (token === buildToken) say(null); }, 1800);
+  // 장을 직접 고친 것(폭 · 교체 · 추가 · 빼기 · 옮김)도 다시 그리기로 끝난다 — 되돌리기 단계 · 자동 저장
+  scheduleCommit();
 }
 
 /** 카메라 — 평면도와 같은 방향(앞벽 쪽에서 뒷벽을 봄) */
@@ -291,7 +320,7 @@ function markIsland(ring = true) {
   if (!ring) return;
   const c = b.getCenter(new THREE.Vector3()), sz = b.getSize(new THREE.Vector3());
   const rot = islLive ? islBuilt!.rot : islandNow()?.rot ?? 0;
-  stage.setIslandRing({ c: [c.x * 1000, c.z * 1000], R: Math.hypot(sz.x, sz.z) * 500 + 250, knob: Math.PI - rot * Math.PI / 180 });
+  stage.setIslandRing({ c: [c.x * 1000, c.z * 1000], R: Math.hypot(sz.x, sz.z) * 500 + 250, knob: Math.PI - rot * Math.PI / 180, deg: rot });
 }
 function pickIsland() {
   if (!current?.island) return;
@@ -344,6 +373,7 @@ function ringRotate(deg: number, done: boolean) {
   const rot = ((((b.rot - deg) % 360) + 360) % 360) as 0 | 90 | 180 | 270;
   if (!done) {
     d.islandCfg.pos = { x: b.x, z: b.z, rot };
+    stage.setRingLabel(rot);
     liveIsland(b.x, b.z, deg * Math.PI / 180);
     replan(true, false);
     return;
@@ -366,7 +396,7 @@ function markHob() {
   const c = b.getCenter(new THREE.Vector3());
   // 손잡이 = 기기 앞쪽(로컬 +z)
   const v = new THREE.Vector3(0, 0, 1).applyQuaternion(top.getWorldQuaternion(new THREE.Quaternion()));
-  stage.setIslandRing({ c: [c.x * 1000, c.z * 1000], R: 480, knob: Math.atan2(v.x, v.z), y: b.max.y * 1000 });
+  stage.setIslandRing({ c: [c.x * 1000, c.z * 1000], R: 480, knob: Math.atan2(v.x, v.z), y: b.max.y * 1000, deg: d.hobRot ?? 0 });
 }
 function pickHob() {
   if (!current?.items.some((x) => x.tag === 'hob')) return;
@@ -400,7 +430,7 @@ let hobRot0: number | null = null;
 function hobRotate(deg: number, done: boolean) {
   if (hobRot0 == null) hobRot0 = d.hobRot ?? 0;
   const { top } = hobDeco();
-  if (!done) { if (top) top.rotation.y = ((hobRot0 + deg) * Math.PI) / 180; const b = top && new THREE.Box3().setFromObject(top); if (b) stage.highlight(b); return; }
+  if (!done) { stage.setRingLabel(hobRot0 + deg); if (top) top.rotation.y = ((hobRot0 + deg) * Math.PI) / 180; const b = top && new THREE.Box3().setFromObject(top); if (b) stage.highlight(b); return; }
   d.hobRot = (((hobRot0 + deg) % 360) + 360) % 360; hobRot0 = null;
   saveDesign(d); void rebuildKitchen();
 }
@@ -762,7 +792,13 @@ function renderGrades() {
   }
   const miss = DOOR_MISSING[grade().id];
   $('#doors').innerHTML = [...lines].map(([line, g]) => `<div class="sw-line">${line}${g.badge ? ` <b class="badge ${g.badge.toLowerCase()}">${g.badge}</b>` : ''}<small>${g.doors.length}색</small></div>`
-    + g.doors.map(({ x, color }) => `<button class="sw${x.obs === d.door ? ' on' : ''}" data-door="${x.obs}" title="${line} ${color} · 원본 ${x.name}"><img loading="lazy" src="${x.img ?? ''}" alt=""><span>${color}</span></button>`).join('')).join('')
+    + g.doors.map(({ x, color }) => {
+      // 단면 자료가 없어 앞면이 깨져 보이는 도어 — 고르지 못하게(쿠지알러 단면을 받으면 풀린다, tools/build_profiles.py)
+      const broken = doorBroken(x.obs), gap = doorGaps(x.obs);
+      const note = broken.length ? ` — 단면 자료 없음(${broken.join(', ')}): 앞판이 깨져 보여 막아 둠. 쿠지알러 단면을 받으면 풀린다`
+        : gap.length ? ` — 일부 단면 없음(${gap.join(', ')}): 손잡이 · 테두리 모양이 근사됨` : '';
+      return `<button class="sw${x.obs === d.door ? ' on' : ''}${broken.length ? ' nodata' : ''}" data-door="${x.obs}"${broken.length ? ' disabled' : ''} title="${line} ${color} · 원본 ${x.name}${note}"><img loading="lazy" src="${x.img ?? ''}" alt=""><span>${broken.length ? '단면 없음' : color}</span></button>`;
+    }).join('')).join('')
     + (miss ? `<div class="sw-miss">카탈로그에 있고 원본 자료에 없는 색: ${miss.join(' · ')}</div>` : '');
 }
 $('#grades').addEventListener('click', (e) => {
@@ -770,7 +806,7 @@ $('#grades').addEventListener('click', (e) => {
   if (!b) return;
   const prevSeries = grade().series;
   d.grade = b.dataset.grade!;
-  d.door = grade().doors[0].obs;
+  d.door = usableDoors(grade())[0].obs;
   renderGrades(); renderStyles();
   // 몸통 계열이 바뀌면(유로 ↔ 키친바흐) 모듈 폭이 달라 다시 배치
   changed(prevSeries !== grade().series ? { plan: true } : { kitchen: true });
@@ -896,7 +932,7 @@ function markDining(ring = true) {
   if (!ring) return;
   const sz = b.getSize(new THREE.Vector3());
   const v = new THREE.Vector3(0, 0, 1).applyAxisAngle(new THREE.Vector3(0, 1, 0), h.rotation.y);
-  stage.setIslandRing({ c: [h.position.x * 1000, h.position.z * 1000], R: Math.hypot(sz.x, sz.z) * 500 + 200, knob: Math.atan2(v.x, v.z), step: 15 });
+  stage.setIslandRing({ c: [h.position.x * 1000, h.position.z * 1000], R: Math.hypot(sz.x, sz.z) * 500 + 200, knob: Math.atan2(v.x, v.z), step: 15, deg: d.dining?.rot ?? 0 });
 }
 /** 끌어 옮기기 — 끄는 동안은 3D 묶음만 옮기고, 놓으면 자리를 저장(다시 짓지 않는다) */
 stage.getDining = () => { const h = diningHolder(); return h ? { x: h.position.x * 1000, z: h.position.z * 1000 } : null; };
@@ -918,7 +954,7 @@ function diningRotate(deg: number, done: boolean) {
   if (!h || !c) return;
   if (dinRot0 == null) dinRot0 = h.rotation.y;
   h.rotation.y = dinRot0 + deg * Math.PI / 180;
-  if (!done) { markDining(false); return; }
+  if (!done) { stage.setRingLabel((c.rot ?? 0) + deg); markDining(false); return; }
   dinRot0 = null;
   c.rot = ((((c.rot ?? 0) + deg) % 360) + 360) % 360;
   saveDesign(d); renderDining(); markDining(); plan.render(d, current);
@@ -1065,6 +1101,7 @@ function runRobot(it: Item) {
   let phase: 'open' | 'drive' | 'close' = 'open', t = 0, seg = 0, last = performance.now();
   const step = (now: number) => {
     if (!rd.rb.parent || robotRun !== run) return;           // 다시 그려졌거나 다른 청소가 시작됨
+    stage.invalidate(true);                                   // 움직이는 동안 그린다(가만히 있으면 화면을 그리지 않는다)
     const dt = Math.min(0.1, (now - last) / 1000); last = now;
     if (run.stop && phase === 'drive') { seg = path.length - 2; t = 1; }   // 멈춤 — 곧장 충전대로(마지막 구간)
     if (phase === 'open') { t += dt / 0.6; rd.flap.rotation.x = Math.min(1, t) * Math.PI / 2; if (t >= 1) { phase = 'drive'; t = 0; } }
@@ -1139,25 +1176,65 @@ $('#cands').addEventListener('click', (e) => {
 });
 $('#ai-run').addEventListener('click', () => replan(false));
 /* 프롬프트 — 말로 조건을 주면 설정을 바꾸고 다시 배치 */
-function runPrompt() {
+/* 프롬프트 해석 — 규칙(앱 안, 정해진 말만) 또는 AI(Claude · Gemini · GPT — 개발 서버 중계 /api/ai, 키는 서버 .env.local).
+ * AI 가 실패하면(키 없음 · 연결 끊김 · 형식 오류) 규칙으로 해석하고 그 사실을 알린다 */
+const AI_KEY = 'kitchen-planner.ai';
+const aiCfg: { provider: 'rule' | AiProvider; model?: string } = (() => { try { return { provider: 'rule' as const, ...JSON.parse(localStorage.getItem(AI_KEY) ?? '{}') }; } catch { return { provider: 'rule' as const }; } })();
+const aiSel = $<HTMLSelectElement>('#ai-provider'), aiModel = $<HTMLSelectElement>('#ai-model');
+const saveAi = () => { try { localStorage.setItem(AI_KEY, JSON.stringify(aiCfg)); } catch { /* 이번 화면엔 반영 */ } };
+function renderAiModels() {
+  const p = aiSel.value as 'rule' | AiProvider;
+  aiModel.hidden = p === 'rule';
+  if (p === 'rule') return;
+  const list = AI_MODELS[p].models;
+  aiModel.innerHTML = list.map((m) => `<option value="${m}">${m}</option>`).join('');
+  aiModel.value = aiCfg.provider === p && aiCfg.model && list.includes(aiCfg.model) ? aiCfg.model : list[0];
+}
+void aiStatus().then((st) => {
+  for (const [p, info] of Object.entries(AI_MODELS) as [AiProvider, { label: string }][]) {
+    const ok = !!st?.[p];
+    const o = new Option(`${info.label}${ok ? '' : st ? ' (키 없음)' : ' (서버 없음)'}`, p);
+    o.disabled = !ok; aiSel.append(o);
+  }
+  aiSel.value = aiCfg.provider !== 'rule' && st?.[aiCfg.provider] ? aiCfg.provider : 'rule';
+  renderAiModels();
+});
+aiSel.addEventListener('change', () => { aiCfg.provider = aiSel.value as 'rule' | AiProvider; renderAiModels(); aiCfg.model = aiModel.hidden ? undefined : aiModel.value; saveAi(); });
+aiModel.addEventListener('change', () => { aiCfg.model = aiModel.value; saveAi(); });
+
+async function runPrompt() {
   const inp = $<HTMLInputElement>('#prompt');
   const text = inp.value.trim();
   if (!text) return;
-  const r = applyPrompt(text, d, cat);
-  $('#prompt-out').innerHTML = r.applied.length
-    ? r.applied.map((x) => `<span>${x}</span>`).join('') + (r.unknown.length ? `<em>못 알아들은 말: ${r.unknown.join(', ')}</em>` : '')
-    : `<em>알아들은 조건이 없습니다 — 예) 「수납 많이」 「답답하지 않게」 「동선이 편하게」 「카페 스타일」</em>`;
-  if (!r.applied.length) return;
+  const out = $('#prompt-out'), go = $<HTMLButtonElement>('#prompt-go');
+  const p = aiSel.value as 'rule' | AiProvider;
+  const before = JSON.stringify(d);
+  let r: { applied: string[]; unknown: string[]; reply?: string };
+  if (p !== 'rule') {
+    out.innerHTML = `<em>${AI_MODELS[p].label}(${aiModel.value}) 해석 중…</em>`;
+    go.disabled = true;
+    try {
+      const a = await aiDesign(text, d, cat, p, aiModel.value);
+      r = { ...a, reply: `${a.reply}${a.reply ? ' · ' : ''}${AI_MODELS[p].label} ${(a.ms / 1000).toFixed(1)}초` };
+    } catch (e) {
+      r = { ...applyPrompt(text, d, cat), reply: `AI 연결 실패(${(e as Error).message.slice(0, 140)}) — 규칙으로 해석했습니다` };
+    } finally { go.disabled = false; }
+  } else r = applyPrompt(text, d, cat);
+  const esc = (s: string) => s.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c]!);
+  out.innerHTML = (r.applied.length
+    ? r.applied.map((x) => `<span>${esc(x)}</span>`).join('') + (r.unknown.length ? `<em>못 알아들은 말: ${esc(r.unknown.join(', '))}</em>` : '')
+    : `<em>알아들은 조건이 없습니다 — 예) 「수납 많이」 「답답하지 않게」 「동선이 편하게」 「카페 스타일」</em>`) + (r.reply ? `<em class="ai-reply">${esc(r.reply)}</em>` : '');
+  if (JSON.stringify(d) === before) return;
   for (const o of d.openings) clampOpening(o, d.room);
   syncRoomInputs();
-  if (!grade().doors.some((x) => x.obs === d.door)) d.door = grade().doors[0].obs;
+  if (!grade().doors.some((x) => x.obs === d.door)) d.door = usableDoors(grade())[0].obs;
   renderOpenWall(); renderLayouts(); renderIsland(); renderOpenings(); renderStyles(); renderGrades(); renderMats(); renderAppliances(); renderDining();
   changed({ room: true, plan: true }); aim();
 }
-$('#prompt-go').addEventListener('click', runPrompt);
+$('#prompt-go').addEventListener('click', () => void runPrompt());
 // 예시 — 눌러서 바로 적용
-document.querySelectorAll<HTMLElement>('#prompt-bar [data-ex]').forEach((b) => b.addEventListener('click', () => { $<HTMLInputElement>('#prompt').value = b.dataset.ex!; runPrompt(); }));
-$<HTMLInputElement>('#prompt').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.isComposing) runPrompt(); });
+document.querySelectorAll<HTMLElement>('#prompt-bar [data-ex]').forEach((b) => b.addEventListener('click', () => { $<HTMLInputElement>('#prompt').value = b.dataset.ex!; void runPrompt(); }));
+$<HTMLInputElement>('#prompt').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.isComposing) void runPrompt(); });
 
 /* ───────── 장 고르기 — 이름 · 사이즈 · 폭 바꾸기 ───────── */
 const NAMES: Record<string, string> = { fridge: '냉장고장 (비스포크 1도어 2대)', fixFill: 'FIX 판 (끝 조각)' };
@@ -1743,6 +1820,7 @@ function animDoors(now: number) {
   doorsT = doorsTo > doorsT ? Math.min(doorsTo, doorsT + dt / 0.6) : Math.max(doorsTo, doorsT - dt / 0.6);
   const e = doorsT * doorsT * (3 - 2 * doorsT);
   if (lastKitchen) setDoors(lastKitchen.doors, e);
+  stage.invalidate(true);
   if (doorsT !== doorsTo) requestAnimationFrame(animDoors);
 }
 $('#t-doors').addEventListener('click', () => {
@@ -1753,9 +1831,16 @@ $('#t-doors').addEventListener('click', () => {
   $('#t-doors').dataset.tip = doorsTo ? '문 닫기' : '문 열기';
   doorsAt = performance.now(); requestAnimationFrame(animDoors);
 });
-// 보기 · 실사 · 조명 · 후처리 — 붙박이장 플래너와 같은 메뉴
-const lookPop = $('#look-pop'), renderPop = $('#render-pop'), sunPanel = $('#sun-panel'), postPanel = $('#post-panel');
-const togglePop = (p: HTMLElement) => { const show = p.hidden; lookPop.hidden = renderPop.hidden = sunPanel.hidden = postPanel.hidden = true; p.hidden = !show; if (show && p === postPanel) renderPost(); if (show && p === sunPanel) syncSliders(); };
+// 보기 · 실사 · 조명 · 후처리 · 성능 — 붙박이장 플래너와 같은 메뉴
+const lookPop = $('#look-pop'), renderPop = $('#render-pop'), sunPanel = $('#sun-panel'), postPanel = $('#post-panel'), perfPop = $('#perf-pop');
+const togglePop = (p: HTMLElement) => { const show = p.hidden; for (const x of [lookPop, renderPop, sunPanel, postPanel, perfPop]) x.hidden = true; p.hidden = !show; if (show && p === postPanel) renderPost(); if (show && p === sunPanel) syncSliders(); };
+// 메뉴 단추는 그 메뉴 창이 열려 있거나 기본이 아닌 상태(재질+라인 · 실사 방식)가 켜져 있을 때만 검게 — 뭘 골랐는지 보이게(사용자 지시 2026-11-06).
+// 창은 여러 곳에서 열고 닫으므로 hidden 속성을 지켜본다
+const MENUS: [HTMLElement, HTMLElement][] = [[$('#t-look'), lookPop], [$('#t-path'), renderPop], [$('#t-sun'), sunPanel], [$('#t-post'), postPanel], [$('#t-perf'), perfPop]];
+const menuOn = new Map<HTMLElement, boolean>();
+const paintMenus = () => { for (const [b, p] of MENUS) b.classList.toggle('on', !p.hidden || !!menuOn.get(b)); };
+const setMenuOn = (b: HTMLElement, on: boolean) => { menuOn.set(b, on); paintMenus(); };
+{ const mo = new MutationObserver(paintMenus); for (const [, p] of MENUS) mo.observe(p, { attributes: true, attributeFilter: ['hidden'] }); }
 $('#t-sun').addEventListener('click', () => togglePop(sunPanel));
 // 실내 조명 — 천장 조명 구성(기본 없음 = 설치 전) · 세기 · 색온도 · 빛 색. 「없음」이면 나머지 칸을 숨긴다
 const ceilSel = $<HTMLSelectElement>('#ceil-sel');
@@ -1838,7 +1923,7 @@ type PostCtl =
 const POST_CTLS: PostCtl[] = [
   { kind: 'grp', label: '간접광 · AO', note: '화면 공간(SSGI)' },
   { kind: 'check', key: 'ssgi', label: '켜기' },
-  { kind: 'select', key: 'aoKind', label: '방식', options: [['both', '간접광 SSGI + AO GTAO'], ['ssgi', 'SSGI — 간접광 + AO'], ['gtao', 'GTAO — AO 만 (노이즈 적음)']] },
+  { kind: 'select', key: 'aoKind', label: '방식', options: [['both', '간접광 SSGI + AO GTAO (기본)'], ['ssgi', 'SSGI — 간접광 + AO (모서리 그늘이 넓게 짐)'], ['gtao', 'GTAO — AO 만 (노이즈 적음)']] },
   { kind: 'range', key: 'aoRadius', label: 'GTAO 반경', min: 0.05, max: 2, step: 0.05 },
   { kind: 'select', key: 'quality', label: '품질', options: [['low', '낮음 (빠름)'], ['mid', '보통'], ['high', '높음 (느림)']] },
   { kind: 'select', key: 'giRes', label: '해상도', options: [['half', '절반 (빠름)'], ['full', '전체 (느림)']] },
@@ -1917,7 +2002,7 @@ const viewCfg: { look?: string; plan?: boolean } = (() => { try { return JSON.pa
 const saveView = () => { try { localStorage.setItem(VIEW_KEY, JSON.stringify(viewCfg)); } catch { /* 이번 화면엔 반영 */ } };
 const setLook = (look: string) => {
   lookPop.querySelectorAll<HTMLElement>('[data-look]').forEach((x) => x.classList.toggle('on', x.dataset.look === look));
-  $('#t-look').classList.toggle('on', look !== 'mat');
+  setMenuOn($('#t-look'), look !== 'mat');
   stage.setLines(look === 'line');
 };
 lookPop.querySelectorAll<HTMLElement>('[data-look]').forEach((b) => b.addEventListener('click', () => {
@@ -1927,7 +2012,7 @@ if (viewCfg.look) setLook(viewCfg.look);
 renderPop.querySelectorAll<HTMLElement>('[data-mode]').forEach((b) => b.addEventListener('click', async () => {
   const mode = b.dataset.mode as RenderMode;
   renderPop.querySelectorAll('[data-mode]').forEach((x) => x.classList.toggle('on', x === b));
-  $('#t-path').classList.toggle('on', mode !== 'raster');
+  setMenuOn($('#t-path'), mode !== 'raster');
   $('#samples').hidden = mode === 'raster' || mode === 'hq'; $('#samples').textContent = '';
   renderPop.hidden = true;
   if (mode !== 'raster') { pick(null); stage.highlight(null); }
@@ -1936,12 +2021,82 @@ renderPop.querySelectorAll<HTMLElement>('[data-mode]').forEach((b) => b.addEvent
 stage.onStatus = (t) => { $('#samples').textContent = t; };
 // 굽기 · 서펠 결과를 다시 쓸 열쇠 — 설계 · 배치안 · 문 열림
 stage.stateKey = () => JSON.stringify([d, current?.id, current?.items.length, doorsTo]);
+// 성능 — PC 사양에 맞춘 화질 단계(사용자 지시 2026-11-06). 자동은 그래픽 카드를 보고 고르고, 3D 를 돌릴 때 버벅이면 한 단계씩 낮춘다.
+// 올리는 건 사용자가 직접(자동으로 오르내리면 화면이 출렁인다). 고른 단계는 이 브라우저에 저장
+const PERF_KEY = 'kitchen-planner.perf';
+type PerfPick = 'auto' | Quality;
+const perfCfg: { pick?: PerfPick; auto?: Quality; gpu?: string } = (() => { try { return JSON.parse(localStorage.getItem(PERF_KEY) ?? '{}'); } catch { return {}; } })();
+const savePerf = () => { try { localStorage.setItem(PERF_KEY, JSON.stringify(perfCfg)); } catch { /* 이번 화면엔 반영 */ } };
+const perfPick = (): PerfPick => perfCfg.pick ?? 'auto';
+const renderPerf = () => {
+  perfPop.querySelectorAll<HTMLElement>('[data-perf]').forEach((x) => x.classList.toggle('on', x.dataset.perf === perfPick()));
+  $('#perf-auto-sub').textContent = `그래픽 카드로 고르고, 돌릴 때 버벅이면 한 단계 낮춤${perfPick() === 'auto' ? ` · 지금 「${QUALITY_TIERS[stage.quality].label}」` : ''}`;
+  $('#perf-note').textContent = `${perfCfg.gpu ? `그래픽 ${perfCfg.gpu} · ` : ''}단계를 고르면 후처리 값도 그 단계 값으로 바뀝니다`;
+};
+// 단계 적용 — post: 후처리 값까지(단계를 고를 때). 시작할 때는 후처리를 건드리지 않는다(사용자가 고친 후처리 값이 이미 저장돼 있다)
+const applyPerf = (q: Quality, post: boolean) => { stage.setQuality(q, post); renderPerf(); if (post && !postPanel.hidden) renderPost(); };
+/** 그래픽 카드로 단계 추정 — NVIDIA · 인텔 Arc 는 고품질, AMD · 애플 · 인텔 최신 내장(Xe-LPG)은 보통, 그 밖 인텔 내장 · 퀄컴 · ARM · 소프트웨어 · WebGL 은 저사양.
+ *  코어 4개 이하 · 메모리 4GB 이하면 한 단계 더 낮춘다(라이트맵 굽기 · 자동 배치가 CPU 몫) */
+async function detectQuality(): Promise<Quality> {
+  let q: Quality = 'mid';
+  if (stage.raster.kind !== 'webgpu') { perfCfg.gpu = 'WebGL'; q = 'low'; }
+  else {
+    const a = await navigator.gpu?.requestAdapter({ powerPreference: 'high-performance' }).catch(() => null);
+    const i = a?.info as (GPUAdapterInfo & { isFallbackAdapter?: boolean }) | undefined;
+    const s = [i?.vendor, i?.architecture, i?.description].filter(Boolean).join(' ').toLowerCase();
+    perfCfg.gpu = s || '알 수 없음';
+    if (!a || i?.isFallbackAdapter || /swiftshader|llvmpipe|microsoft basic/.test(s)) q = 'low';
+    else if (/nvidia/.test(s)) q = 'high';
+    else if (/intel/.test(s)) q = /hpg|\barc\b/.test(s) ? 'high' : /xe2?-lpg|xe3/.test(s) ? 'mid' : 'low';
+    else if (/qualcomm|\barm\b|mali|adreno|powervr|img-tec/.test(s)) q = 'low';
+    else if (/\brx ?\d/.test(s)) q = 'high';   // AMD 외장(이름이 보일 때만)
+  }
+  const cores = navigator.hardwareConcurrency || 8, mem = (navigator as Navigator & { deviceMemory?: number }).deviceMemory ?? 8;
+  if ((cores <= 4 || mem <= 4) && q !== 'low') q = q === 'high' ? 'mid' : 'low';
+  return q;
+}
+{
+  const p = perfPick();
+  if (p !== 'auto') applyPerf(p, false);
+  else if (perfCfg.auto) applyPerf(perfCfg.auto, false);
+  // 처음 — 고른 단계가 고품질(기본값)이 아니면 후처리 값까지 그 단계로
+  else void detectQuality().then((q) => { perfCfg.auto = q; savePerf(); applyPerf(q, q !== 'high'); });
+}
+perfPop.querySelectorAll<HTMLElement>('[data-perf]').forEach((b) => b.addEventListener('click', async () => {
+  const p = b.dataset.perf as PerfPick;
+  perfCfg.pick = p;
+  if (p === 'auto') { perfCfg.auto = await detectQuality(); savePerf(); applyPerf(perfCfg.auto, true); }
+  else { savePerf(); applyPerf(p, true); }
+}));
+$('#t-perf').addEventListener('click', () => { renderPerf(); togglePop(perfPop); });
+// 자동 — 3D 를 돌리는 동안(60장 넘게 모이면) 한 장 간격 가운데값이 45ms(≈22fps)를 넘으면 한 단계 낮춘다
+const perfToast = $('#perf-toast');
+let toastTimer = 0;
+setInterval(() => {
+  if (perfPick() !== 'auto' || stage.mode !== 'raster' || document.hidden || stage.quality === 'low') return;
+  const s = stage.frameStats();
+  if (s.n < 60 || s.med <= 45) return;
+  const q: Quality = stage.quality === 'high' ? 'mid' : 'low';
+  console.info('[성능] 돌릴 때 느려서 한 단계 낮춤', { 간격_ms: Math.round(s.med), 느린10퍼: Math.round(s.p90), 장수: s.n }, stage.quality, '→', q);
+  perfCfg.auto = q; savePerf(); applyPerf(q, true);
+  perfToast.textContent = `화면이 버벅여서 성능을 「${QUALITY_TIERS[q].label}」으로 낮췄습니다 · 오른쪽 성능 메뉴에서 바꿀 수 있습니다`;
+  perfToast.hidden = false; clearTimeout(toastTimer); toastTimer = window.setTimeout(() => { perfToast.hidden = true; }, 5000);
+}, 2000);
 $('#t-plan').addEventListener('click', () => { const box = $('#plan-box'); box.hidden = !box.hidden; $('#t-plan').classList.toggle('on', !box.hidden); viewCfg.plan = !box.hidden; saveView(); });
 if (viewCfg.plan === false) { $('#plan-box').hidden = true; $('#t-plan').classList.remove('on'); }
 // 평면도 확대 · 축소 · 맞춤 버튼
 document.querySelectorAll<HTMLElement>('[data-pz]').forEach((b) => b.addEventListener('click', () => {
   const k = b.dataset.pz; if (k === 'fit') plan.fit(); else plan.zoomBy(k === 'in' ? 1.25 : 1 / 1.25);
 }));
+// 동선 정보(작업 삼각형 변 길이 · 통로 폭 · 이동 경로) 켜고 끄기 — 요약 줄은 늘 보인다. 보기 설정에 기억
+{
+  const vf = viewCfg as { flow?: boolean };
+  plan.flowBox = $('#plan-flow');
+  plan.showFlow = vf.flow !== false;
+  $('#pz-flow').classList.toggle('on', plan.showFlow);
+  $('#pz-flow').addEventListener('click', () => { plan.showFlow = !plan.showFlow; vf.flow = plan.showFlow; saveView(); $('#pz-flow').classList.toggle('on', plan.showFlow); plan.render(d, current); });
+  plan.render(d, current);
+}
 // 평면도 창 크기 — 오른쪽 위 손잡이를 끌어서(창은 왼쪽 아래에 붙어 있다). 크기는 저장
 {
   const box = $('#plan-box'), grip = box.querySelector<HTMLElement>('.plan-resize')!;
@@ -1960,10 +2115,142 @@ document.querySelectorAll<HTMLElement>('[data-pz]').forEach((b) => b.addEventLis
   grip.addEventListener('dblclick', () => { box.style.width = box.style.height = ''; box.classList.remove('sized'); delete vcfg.planW; delete vcfg.planH; saveView(); });
 }
 
+/* ───────── 설계 묶음 되살리기 — 되돌리기 · 다시 하기 · 설계 파일 불러오기 ───────── */
+/** 고른 것 · 끄는 중인 것을 모두 푼다(되살린 상태에는 그 장 · 개구부가 없을 수 있다) */
+function clearSelection() {
+  stage.cancelDrag();
+  pick(null);
+  if (selectedOp) pickOpening(null);
+  if (islandSel) unpickIsland();
+  if (hobSel) unpickHob();
+  diningSel = false; stage.setIslandRing(null);
+  $('#item-info').hidden = true; stage.highlight(null); showWallArrow(null); plan.pickedWall = null;
+}
+/** 패널 전부를 설계에 맞춰 다시 */
+function refreshPanels() {
+  syncRoomInputs(); renderOpenWall(); renderLayouts(); renderIsland(); renderOpenings(); renderStyles(); renderGrades(); renderMats(); renderAppliances(); renderDining();
+  $<HTMLInputElement>('#fridge-on').checked = !d.noFridge;
+}
+/** 설계 · 배치안을 그대로 놓는다 — 자동 배치는 다른 안 목록에만 쓰고, 지금 안은 저장된 배치(직접 고친 장 포함) 그대로 */
+async function applySnapshot(s: Snapshot, record: boolean) {
+  clearSelection();
+  restoring = !record;
+  clearTimeout(commitTimer);
+  for (const k of Object.keys(d)) delete (d as unknown as Record<string, unknown>)[k];
+  Object.assign(d, s.design);
+  storeDesign(d);
+  cands = autoPlan(d, cat, grade().series);
+  current = s.plan;
+  if (current) { const i = cands.findIndex((c) => c.id === current!.id); if (i >= 0) cands[i] = current; else cands.unshift(current); }
+  refreshPanels();
+  rebuildRoom();
+  renderCands(); renderRunLen(); plan.render(d, current);
+  await rebuildKitchen();
+  if (!record) { clearTimeout(commitTimer); hist.sync(encode({ design: d, plan: current })); try { localStorage.setItem(PLAN_KEY, hist.last!); } catch { /* 화면은 그대로 */ } }
+  restoring = false;
+  renderHistory();
+}
+function undo() {
+  if (commitTimer) { clearTimeout(commitTimer); commit(); }     // 아직 안 쌓인 마지막 변경부터
+  const s = hist.back(); if (!s) return;
+  void applySnapshot(decode(s), false).then(() => say(`되돌렸습니다 · 남은 ${hist.undo.length}단계`)).then(() => setTimeout(() => say(null), 1500));
+}
+function redo() {
+  if (commitTimer) { clearTimeout(commitTimer); commit(); }
+  const s = hist.forward(); if (!s) return;
+  void applySnapshot(decode(s), false).then(() => say(`다시 했습니다 · 남은 ${hist.redo.length}단계`)).then(() => setTimeout(() => say(null), 1500));
+}
+function renderHistory() {
+  const u = $<HTMLButtonElement>('#h-undo'), r = $<HTMLButtonElement>('#h-redo');
+  u.disabled = !hist.undo.length; r.disabled = !hist.redo.length;
+  u.title = `되돌리기 (Ctrl+Z) · ${hist.undo.length}/${hist.limit}`; r.title = `다시 하기 (Ctrl+Y) · ${hist.redo.length}/${hist.limit}`;
+}
+
+/* ───────── 설계 파일 — 저장 · 불러오기 ───────── */
+const ROOM_NAME: Record<LayoutKind, string> = { I: 'ㅡ자', L: 'ㄱ자', Lr: 'ㄱ자 반대', U: 'ㄷ자', II: '11자', walls: '벽마다' };
+function stamp() { const t = new Date(), p = (n: number) => String(n).padStart(2, '0'); return `${t.getFullYear()}${p(t.getMonth() + 1)}${p(t.getDate())}_${p(t.getHours())}${p(t.getMinutes())}`; }
+async function saveFile() {
+  if (commitTimer) { clearTimeout(commitTimer); commit(); }
+  const text = toFile({ design: d, plan: current }, {
+    app: `kitchen-planner ${pkg.version}`,
+    summary: { 공간: `${d.room.w}×${d.room.d}×${d.room.h}`, 구조: ROOM_NAME[d.layout], 아일랜드: d.island, 스타일: STYLE_LABEL[d.style], 그레이드: grade().label, 장: current?.items.length ?? 0, 배치안: current?.title },
+    bom: current ? buildBom(d, current, cat, grade()) : [],
+    settings: { light: { sun: stage.sunCfg, room: stage.roomCfg, shadow: stage.shadowCfg }, post: stage.raster.post, mode: stage.mode },
+  });
+  const name = `부엌설계_${stamp()}.kitchen.json`;
+  // 저장 위치를 고를 수 있으면(크롬 · 엣지) 고르게, 아니면 내려받기 폴더로
+  const picker = (window as unknown as { showSaveFilePicker?: (o: object) => Promise<{ name: string; createWritable(): Promise<{ write(t: string): Promise<void>; close(): Promise<void> }> }> }).showSaveFilePicker;
+  if (picker) {
+    try {
+      const h = await picker({ suggestedName: name, types: [{ description: '부엌 설계 파일', accept: { 'application/json': ['.json'] } }] });
+      const w = await h.createWritable(); await w.write(text); await w.close();
+      say(`저장했습니다 — ${h.name}`); setTimeout(() => say(null), 2500); return;
+    } catch (e) { if ((e as DOMException).name === 'AbortError') return; }
+  }
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([text], { type: 'application/json' })); a.download = name; a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  say(`저장했습니다 — ${name}`); setTimeout(() => say(null), 2500);
+}
+async function openFile(file: File) {
+  let s: Snapshot;
+  try { s = fromFile(await file.text()); } catch (e) { alert(`불러오지 못했습니다 — ${(e as Error).message}`); return; }
+  // 지금 카탈로그에 없는 장(예전 판 카탈로그로 만든 파일) — 그 장만 빠진다
+  const missing = [...new Set((s.plan?.items ?? []).map((it) => it.key).filter((k) => !cat.modules.some((m) => m.key === k) && !/^(fridge|fixFill|fill\d*)$/.test(k)))];
+  if (commitTimer) { clearTimeout(commitTimer); commit(); }
+  await applySnapshot(s, true);       // 불러오기도 한 단계 — 되돌리면 불러오기 전으로
+  say(missing.length ? `불러왔습니다 — 지금 카탈로그에 없는 장 ${missing.length}종(${missing.join(', ')})은 빠졌습니다` : `불러왔습니다 — ${file.name}`);
+  setTimeout(() => say(null), missing.length ? 6000 : 2500);
+}
+/** 견적 데이터(부품 목록) — 엑셀에서 열리는 CSV. 빈 칸(한샘 코드 · 단가)은 단가표를 원본 ID 로 이어 채운다 */
+function saveBom() {
+  if (!current) return;
+  const rows = buildBom(d, current, cat, grade());
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([bomCsv(rows)], { type: 'text/csv' })); a.download = `부엌견적_${stamp()}.csv`; a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  const g = bomGaps(rows);
+  say(`견적 데이터 ${rows.length}줄 — 비어 있는 칸: ${Object.entries(g).map(([k, v]) => `${k} ${v.length}`).join(' · ') || '없음'}`); setTimeout(() => say(null), 4000);
+}
+$('#f-save').addEventListener('click', () => void saveFile());
+$('#f-bom').addEventListener('click', saveBom);
+$('#f-open').addEventListener('click', () => $<HTMLInputElement>('#f-input').click());
+$<HTMLInputElement>('#f-input').addEventListener('change', (e) => { const inp = e.target as HTMLInputElement; const f = inp.files?.[0]; inp.value = ''; if (f) void openFile(f); });
+$('#h-undo').addEventListener('click', undo);
+$('#h-redo').addEventListener('click', redo);
+// 단축키 — 글자 입력 중엔 그 칸의 되돌리기를 그대로 둔다
+window.addEventListener('keydown', (e) => {
+  if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+  const t = e.target as HTMLElement;
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
+  const k = e.key.toLowerCase();
+  if (k === 'z' && !e.shiftKey) { e.preventDefault(); undo(); }
+  else if (k === 'y' || (k === 'z' && e.shiftKey)) { e.preventDefault(); redo(); }
+  else if (k === 's') { e.preventDefault(); void saveFile(); }
+  else if (k === 'o') { e.preventDefault(); $<HTMLInputElement>('#f-input').click(); }
+});
+
 /* ───────── 시작 ───────── */
 renderLayouts(); renderIsland(); renderOpenings(); renderStyles(); renderGrades(); renderMats(); renderAppliances(); renderDining();
 rebuildRoom();
-replan();
+replan(true, false);
+// 새로고침 전에 직접 고친 장 — 설계가 그대로면 그때 배치안(자동 배치는 직접 고친 폭 · 교체 · 추가 · 빼기를 모른다)
+try {
+  const raw = localStorage.getItem(PLAN_KEY);
+  if (raw) {
+    const s = decode(raw);
+    if (s.plan && JSON.stringify(s.design) === JSON.stringify(d)) {
+      current = s.plan;
+      const i = cands.findIndex((c) => c.id === current!.id); if (i >= 0) cands[i] = current; else cands.unshift(current);
+      renderCands(); renderRunLen(); plan.render(d, current);
+    }
+  }
+} catch { /* 못 읽으면 자동 배치 그대로 */ }
+hist.sync(encode({ design: d, plan: current }));
+renderHistory();
+void rebuildKitchen();
 aim();
 // 시험용
-(window as unknown as Record<string, unknown>).__kp = { d, stage, get cands() { return cands; }, get current() { return current; }, get kitchen() { return lastKitchen; }, replan, resizeItem, rebuildKitchen, pick, swapItem, runRobot, addBeside, removeItem, get robotRun() { return robotRun; }, robotPath };
+(window as unknown as Record<string, unknown>).__kp = { d, stage, get cands() { return cands; }, get current() { return current; }, get kitchen() { return lastKitchen; }, replan, resizeItem, rebuildKitchen, pick, swapItem, runRobot, addBeside, removeItem, get robotRun() { return robotRun; }, robotPath,
+  hist, undo, redo, commit, fileText: () => toFile({ design: d, plan: current }, { app: `kitchen-planner ${pkg.version}` }), openText: (t: string) => applySnapshot(fromFile(t), true),
+  bom: () => { const rows = current ? buildBom(d, current, cat, grade()) : []; return { rows, gaps: bomGaps(rows) }; } };

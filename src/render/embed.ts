@@ -54,7 +54,19 @@ export async function startEmbed(kind: EmbedKind, host: HTMLElement, objects: TH
 
   let active = true, status = '', loaded = false;
   let last = light;
-  const send = (m: unknown, transfer: Transferable[] = []) => frame.contentWindow?.postMessage(m, '*', transfer);
+  /* 숨긴 엔진 화면 멈추기 — display:none 이어도 브라우저가 iframe 의 requestAnimationFrame 을 계속 돌려(2초에 110번, 실측 2026-11-06)
+   * 숨긴 엔진이 GPU 로 계속 그렸다. 같은 출처라 그 창의 requestAnimationFrame 을 바꿔 쥐고 있다가 다시 보일 때 돌려준다 */
+  const held: FrameRequestCallback[] = [];
+  const freeze = (on: boolean) => {
+    const w = frame.contentWindow as (Window & { __raf?: Window['requestAnimationFrame'] }) | null;
+    if (!w) return;
+    try {
+      w.__raf ??= w.requestAnimationFrame.bind(w);
+      if (on) w.requestAnimationFrame = (cb) => { held.push(cb); return 0; };
+      else { w.requestAnimationFrame = w.__raf; for (const cb of held.splice(0)) w.__raf(cb); }
+    } catch { /* 다른 출처면 그대로 — 숨기기만 */ }
+  };
+  const send =(m: unknown, transfer: Transferable[] = []) => frame.contentWindow?.postMessage(m, '*', transfer);
   const onMsg = (e: MessageEvent) => {
     if (e.source !== frame.contentWindow) return;
     const m = e.data;
@@ -72,8 +84,8 @@ export async function startEmbed(kind: EmbedKind, host: HTMLElement, objects: TH
   window.addEventListener('message', onMsg);
   return {
     get status() { return status; },
-    // 저장해 둔 결과 사이를 오갈 때 — 숨긴 화면은 브라우저가 그리기를 멈춘다
-    setActive(on) { active = on; frame.style.display = on ? '' : 'none'; if (on && status) onStatus(status); },
+    // 저장해 둔 결과 사이를 오갈 때 — 숨긴 화면은 그리기 루프까지 멈춘다(위 freeze)
+    setActive(on) { if (active === on) return; active = on; frame.style.display = on ? '' : 'none'; freeze(!on); if (on && status) onStatus(status); },
     // 조명 값만 보낸다 — 엔진이 직접광은 즉시, 튄 빛은 놓은 뒤 다시 굽는다(엔진 쪽에서 같은 값이면 무시)
     setLight(l) { last = l; if (loaded) send({ type: 'light', light: l }); },
     dispose() {

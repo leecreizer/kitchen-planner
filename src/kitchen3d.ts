@@ -1,10 +1,12 @@
 // 배치안 → 3D — 장(원본 계산) · EP · FIX 도어 · 냉장고 · 걸레받이 · 서라운딩 · 상판 · 벽 타일 · 싱크볼 · 수전 · 쿡탑
 import * as THREE from 'three';
-import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { gltfLoader as gltf } from './gltf';
 import { OBB } from 'three/examples/jsm/math/OBB.js';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import type { Candidate, Frame, Item } from './autoplan';
 import { BASE_D, CORNER_D, COUNTER_D, FRIDGE_GAP_BACK, fridgeSpec, TALL_TOP, upperBottomOf, upperTopOf } from './autoplan';
-import { boxUV, buildModule, partMaterial, texture, type DoorPart } from './cabinet3d';
+import { boxUV, buildModule, cabinetCacheGeneration, partMaterial, texture, trimCabinetCache, type DoorPart } from './cabinet3d';
+import { shared, shareTree } from './dispose';
 import { ISLAND_HOOD_DEFAULT, hoodKindOf, applianceOf, type Appliance } from './catalog';
 import { texUrl, type GradeDef, type KitchenCatalog, type Series } from './kjlLib';
 import { CASING } from './room3d';
@@ -132,9 +134,10 @@ const box = (w: number, h: number, d: number, mat: THREE.Material, x: number, y:
   return m;
 };
 /** 빌트인 후드 — 후드장 밑면(y) 아래로 스테인리스 몸체 · 앞쪽 검은 유리 바이저 · 조명 두 개 (원본 후드장은 기기 자리만 비워 둔다) */
-const steel = new THREE.MeshStandardMaterial({ color: '#c9ccd0', metalness: 0.85, roughness: 0.32 });
-const visor = new THREE.MeshStandardMaterial({ color: '#111214', metalness: 0.3, roughness: 0.08 });
-const lamp = new THREE.MeshStandardMaterial({ color: '#fff6e0', emissive: '#fff1cc', emissiveIntensity: 1.2 });
+// 모듈 수준 재질은 그릴 때마다 같이 쓴다 — 다 쓴 부엌을 놓을 때 건너뛰게 shared
+const steel = shared(new THREE.MeshStandardMaterial({ color: '#c9ccd0', metalness: 0.85, roughness: 0.32 }));
+const visor = shared(new THREE.MeshStandardMaterial({ color: '#111214', metalness: 0.3, roughness: 0.08 }));
+const lamp = shared(new THREE.MeshStandardMaterial({ color: '#fff6e0', emissive: '#fff1cc', emissiveIntensity: 1.2 }));
 function hoodUnit(w: number, y: number, depth: number, cw = w): THREE.Group {
   // w = 후드 기기 폭(카탈로그 규격) · cw = 후드장 폭 — 장 가운데에
   const g = new THREE.Group();
@@ -209,11 +212,36 @@ function ceilingHood(a: Appliance | undefined, roomH: number): THREE.Group {
 }
 
 /* ───────── 식기세척기 내부 — 스테인리스 통 · 위아래 바구니 · 수저 트레이 · 회전 노즐 (원본 식세장은 기기 자리만 비워 둔다) ───────── */
-const dwSteel = new THREE.MeshStandardMaterial({ color: '#cfd2d5', metalness: 0.75, roughness: 0.28 });
-const dwDark = new THREE.MeshStandardMaterial({ color: '#2b2d30', roughness: 0.5 });
-const dwWire = new THREE.MeshStandardMaterial({ color: '#9ea3a8', metalness: 0.6, roughness: 0.35 });
-const dwGray = new THREE.MeshStandardMaterial({ color: '#7d8287', roughness: 0.45 });
+const dwSteel = shared(new THREE.MeshStandardMaterial({ color: '#cfd2d5', metalness: 0.75, roughness: 0.28 }));
+const dwDark = shared(new THREE.MeshStandardMaterial({ color: '#2b2d30', roughness: 0.5 }));
+const dwWire = shared(new THREE.MeshStandardMaterial({ color: '#9ea3a8', metalness: 0.6, roughness: 0.35 }));
+const dwGray = shared(new THREE.MeshStandardMaterial({ color: '#7d8287', roughness: 0.45 }));
+/** 움직이지 않는 작은 부품 묶음을 재질별로 한 메시씩 — 그리기 호출(드로우콜)을 줄인다. 자식 메시만(손자 없음), 위치 · 회전을 형상에 굽는다 */
+function mergeByMaterial(g: THREE.Group): THREE.Group {
+  const byMat = new Map<THREE.Material, THREE.BufferGeometry[]>();
+  for (const c of [...g.children]) {
+    const m = c as THREE.Mesh;
+    if (!m.isMesh || Array.isArray(m.material) || m.children.length) continue;
+    m.updateMatrix();
+    const geo = m.geometry.clone().applyMatrix4(m.matrix);
+    // 합칠 형상끼리 속성이 같아야 한다 — 위치 · 법선 · UV 만 남긴다
+    for (const k of Object.keys(geo.attributes)) if (k !== 'position' && k !== 'normal' && k !== 'uv') geo.deleteAttribute(k);
+    const list = byMat.get(m.material) ?? []; list.push(geo); byMat.set(m.material, list);
+    g.remove(m); m.geometry.dispose();
+  }
+  for (const [mat, geos] of byMat) {
+    const merged = mergeGeometries(geos, false);
+    for (const geo of merged ? [merged] : geos) { const mesh = new THREE.Mesh(geo, mat); mesh.castShadow = mesh.receiveShadow = true; g.add(mesh); }
+    if (merged) geos.forEach((x) => x.dispose());
+  }
+  return g;
+}
+
+/** 식기세척기 속 — 철망 살 하나하나가 상자라 280개 남짓이었다 → 재질별로 합쳐 4개(장 전체 그리기 호출의 70%) */
 function dishInterior(W: number): THREE.Group {
+  return mergeByMaterial(dishInteriorParts(W));
+}
+function dishInteriorParts(W: number): THREE.Group {
   const g = new THREE.Group();
   const x0 = 22, x1 = W - 22, y0 = PLINTH + 12, y1 = PLINTH + 722, z0 = 40, z1 = 560, cx = (x0 + x1) / 2, iw = x1 - x0, T = 4;
   // 통 — 옆 · 뒤 · 위 · 바닥
@@ -248,13 +276,13 @@ function dishInterior(W: number): THREE.Group {
 }
 
 /* ───────── 냉장고 — 삼성 비스포크 스타일(평면 컬러 패널 · 홈 손잡이 · 얇은 이음 · 아래 그릴). 원점 = 기기 왼쪽 뒤 바닥 ───────── */
-const fridgeBody = new THREE.MeshStandardMaterial({ color: '#c8cacc', metalness: 0.55, roughness: 0.35 });
-const fridgeDark = new THREE.MeshStandardMaterial({ color: '#1d1e20', roughness: 0.6 });
+const fridgeBody = shared(new THREE.MeshStandardMaterial({ color: '#c8cacc', metalness: 0.55, roughness: 0.35 }));
+const fridgeDark = shared(new THREE.MeshStandardMaterial({ color: '#1d1e20', roughness: 0.6 }));
 const fridgeMats = new Map<string, THREE.MeshStandardMaterial>();
 function fridgeColor(d: Design): THREE.MeshStandardMaterial {
   const c = FRIDGE_COLORS.find((x) => x[0] === d.fridgeColor) ?? FRIDGE_COLORS[0];
   let m = fridgeMats.get(c[0]);
-  if (!m) fridgeMats.set(c[0], (m = new THREE.MeshStandardMaterial({ color: c[2], roughness: c[3] ? 0.12 : 0.55, metalness: c[3] ? 0.05 : 0 })));
+  if (!m) fridgeMats.set(c[0], (m = shared(new THREE.MeshStandardMaterial({ color: c[2], roughness: c[3] ? 0.12 : 0.55, metalness: c[3] ? 0.05 : 0 }))));
   return m;
 }
 /** kind — oneL · oneR 1도어(경첩 왼쪽 · 오른쪽) · quad 4도어(위 양문 + 아래 서랍 2) · sbs 양문형 */
@@ -318,15 +346,14 @@ function worldUV(g: THREE.BufferGeometry, su: number, sv = su) {
 
 /* ───────── 기기 모델 (홈뷰 상품 GLB, m 단위 · 앞면 +z) ─────────
  *  sink_a = 싱크볼(SSU000166, 818×450 · 윗면 y 0~5, 볼은 아래로) · faucet_a = 수전(SHD000146, 바닥 원점 · 토출구 +z)
- *  hob_a = 인덕션(SCB000273, 626×7×526 검은 유리 · 바닥 원점) */
-const gltf = new GLTFLoader();
+ *  hob_a = 인덕션(SCB000273, 626×7×526 검은 유리 · 바닥 원점). Draco + WebP 압축본(gltf.ts) */
 const propCache = new Map<string, Promise<THREE.Object3D>>();
 function propModel(name: string): Promise<THREE.Object3D> {
   let p = propCache.get(name);
   if (!p) {
     p = gltf.loadAsync(`${import.meta.env.BASE_URL}props/${name}.glb`).then((g) => {
       g.scene.traverse((o) => { const m = o as THREE.Mesh; if (m.isMesh) { m.castShadow = m.receiveShadow = true; } });
-      return g.scene;
+      return shareTree(g.scene);     // 복제본들이 형상 · 재질 · 텍스처를 같이 쓴다
     });
     propCache.set(name, p);
   }
@@ -335,6 +362,7 @@ function propModel(name: string): Promise<THREE.Object3D> {
 
 export async function buildKitchen(c: Candidate, d: Design, cat: KitchenCatalog, grade: GradeDef, doorObs: string, onProgress?: (done: number, all: number) => void): Promise<KitchenObj> {
   const t0 = performance.now();
+  cabinetCacheGeneration();
   const group = new THREE.Group();
   group.name = 'kitchen';
   const series: Series = grade.series;
@@ -751,6 +779,7 @@ export async function buildKitchen(c: Candidate, d: Design, cat: KitchenCatalog,
   for (const { item, obj } of out) if (item.tag === 'island' || item.tag === 'fix' || (item.wall == null && item.level === 'base')) obj.userData.island = true;
   void COUNTER_D;
   limitDoors(group, doors);
+  trimCabinetCache();
   return { group, items: out, ms: performance.now() - t0, doorMat, doors };
 }
 

@@ -5,6 +5,7 @@ import { BASE_D, WALL_D } from './autoplan';
 import { chairSpots, diningOf, diningPose } from './dining3d';
 import { ISLAND_TABLE } from './plan';
 import { livingOf, OPENING_INFO, clampOpening, nearestWall, wallFrame, wallName, wallLength, type Design, type FixKey, type Opening, type WallId } from './plan';
+import { flowOf, type FlowInfo } from './flow';
 
 const NS = 'http://www.w3.org/2000/svg';
 const el = <K extends keyof SVGElementTagNameMap>(tag: K, attrs: Record<string, string | number>, parent?: Element) => {
@@ -19,6 +20,9 @@ export class PlanView {
   /** 돌린 그림 묶음 — 마우스 좌표도 이것 기준 */
   private root?: SVGGElement;
   private angle = 0;
+  /** 동선 정보 겹쳐 그리기 — 작업 삼각형 변 길이 · 통로 폭 · 이동 경로(flow.ts). 요약은 flowBox 에 */
+  showFlow = true;
+  flowBox?: HTMLElement;
   selected: string | null = null;
   onChange?: (id: string, o: Partial<Opening>, done: boolean) => void;
   onSelect?: (id: string | null) => void;
@@ -265,7 +269,48 @@ export class PlanView {
       const p = [f.o[0] + f.dir[0] * L / 2 - f.n[0] * 230, f.o[1] + f.dir[1] * L / 2 - f.n[1] * 230];
       const t = el('text', { x: p[0], y: p[1], class: 'p-wallname', transform: w % 2 ? `rotate(${w === 1 ? 90 : -90} ${p[0]} ${p[1]})` : '' }, svg); t.textContent = wallName(d.openWall, w);
     }
+    this.drawFlow(top, svg);
     this.uprightText();
+  }
+
+  /** 동선 정보 — ① 작업 삼각형 변 길이 ② 통로 폭(치수선) ③ 이동 경로(거실 → 냉장고 → 싱크 → 쿡탑, 화살표 · 번호). 눌러지지 않는 겹친 층 */
+  private drawFlow(top: SVGSVGElement, svg: SVGGElement) {
+    const fl: FlowInfo | null = this.c && this.d ? flowOf(this.d, this.c) : null;
+    if (this.flowBox) {
+      const n = (v: number) => v.toLocaleString('ko-KR');
+      this.flowBox.innerHTML = !fl ? '' : [
+        fl.legs.length === 3 ? `<span class="${fl.triOk ? '' : 'bad'}" title="권장: 각 변 1,200~2,700 · 합 4,000~7,900">작업 삼각형 <b>${n(fl.triTotal)}</b> <small>(${fl.legs.map((l) => `<i class="${l.ok ? '' : 'bad'}">${n(l.len)}</i>`).join(' · ')})</small></span>` : '',
+        fl.minAisle != null ? `<span class="${fl.minAisle < 900 ? 'bad' : ''}" title="900 미만 좁음 · 1,070 이상 작업 통로 · 1,220 이상 2인 작업">통로 최소 <b>${n(fl.minAisle)}</b></span>` : '',
+        fl.path.length > 1 ? `<span class="${fl.blocked ? 'bad' : ''}" title="${fl.stops.map((s) => s.label).join(' → ')}">이동 <b>${(fl.pathLen / 1000).toFixed(1)}m</b>${fl.blocked ? ' (막힌 곳 있음)' : ''}</span>` : '',
+      ].filter(Boolean).join('');
+    }
+    if (!fl || !this.showFlow) return;
+    // 화살촉
+    const defs = el('defs', {}, top);
+    const mk = el('marker', { id: 'p-arrow', viewBox: '0 0 10 10', refX: 6, refY: 5, markerWidth: 5, markerHeight: 5, orient: 'auto' }, defs);
+    el('path', { d: 'M0,1 L9,5 L0,9 z', class: 'p-arrowhead' }, mk);
+    const g = el('g', { class: 'p-flow' }, svg);
+    // ③ 이동 경로 — 구간마다 화살표
+    for (let k = 1; k < fl.path.length; k++) {
+      const [a, b] = [fl.path[k - 1], fl.path[k]];
+      el('line', { x1: a[0], y1: a[1], x2: b[0], y2: b[1], class: `p-path${fl.blocked ? ' blocked' : ''}`, 'marker-end': 'url(#p-arrow)' }, g);
+    }
+    fl.stops.forEach((s, k) => {
+      el('circle', { cx: s.p[0], cy: s.p[1], r: 95, class: 'p-stop' }, g);
+      const t = el('text', { x: s.p[0], y: s.p[1], class: 'p-stoptxt' }, g); t.textContent = String(k + 1);
+    });
+    // ① 작업 삼각형 — 변 가운데 길이
+    for (const l of fl.legs) {
+      const m = [(l.a[0] + l.b[0]) / 2, (l.a[1] + l.b[1]) / 2];
+      const t = el('text', { x: m[0], y: m[1], class: `p-leg${l.ok ? '' : ' bad'}` }, g); t.textContent = l.len.toLocaleString('ko-KR');
+    }
+    // ② 통로 폭 — 치수선 · 양 끝 눈금 · 값
+    for (const a of fl.aisles) {
+      el('line', { x1: a.a[0], y1: a.a[1], x2: a.b[0], y2: a.b[1], class: `p-aisle ${a.grade}` }, g);
+      const dx = a.b[0] - a.a[0], dz = a.b[1] - a.a[1], L = Math.hypot(dx, dz) || 1, nx = -dz / L * 60, nz = dx / L * 60;
+      for (const p of [a.a, a.b]) el('line', { x1: p[0] - nx, y1: p[1] - nz, x2: p[0] + nx, y2: p[1] + nz, class: `p-aisle ${a.grade}` }, g);
+      const t = el('text', { x: (a.a[0] + a.b[0]) / 2, y: (a.a[1] + a.b[1]) / 2, class: `p-aisletxt ${a.grade}` }, g); t.textContent = a.w.toLocaleString('ko-KR');
+    }
   }
 
   /** 돌린 그림 속 글자를 똑바로 */

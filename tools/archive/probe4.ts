@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
-import { setReader, loadCatalog, ensure, modelOf, kjlCatalog } from '../src/kjlLib';
-import { PmEval } from '../src/kjl/resolve';
-import { buildModel } from '../src/kjl/geometry';
+import { setReader, loadCatalog, ensure, modelOf, kjlCatalog } from '../../src/kjlLib';
+import { PmEval } from '../../src/kjl/resolve';
+import { buildModel } from '../../src/kjl/geometry';
 setReader(async (p) => JSON.parse(readFileSync(`public/kjl/${p}`, 'utf-8')));
 const cat = await loadCatalog();
 for (const s of ['EO', 'KB'] as const) for (const [key, ov] of [['fridgeTop', { STD_YN: 'true', NSTD_W: '1200' }], ['fridgeTop', {}], ['epT', {}], ['epTx', {}], ['epB', {}], ['epW', {}], ['fix', { W: '600' }]] as const) {

@@ -1,10 +1,11 @@
 // 식탁 · 식탁의자 — 홈뷰 한샘 상품(DT_ProductMaster 의 DiningTable · DiningChair) GLB. 원점 = 바닥 가운데, 앞 +z
 // 데이터 src/dining.json — 식탁마다 모양(round 원형 · oval 타원 · rect 4각) · 인원(4 · 6) · 실측 크기(W×D×H) · 짝 의자
 import * as THREE from 'three';
-import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { gltfLoader as loader } from './gltf';
 import DINING from './dining.json';
 import { WALL_T } from './room3d';
 import { wallFrame, wallLength, type Design } from './plan';
+import { shareTree } from './dispose';
 
 export type DiningShape = 'round' | 'oval' | 'rect';
 export interface DiningSet { code: string; name: string; price: number; shape: DiningShape; seats: 4 | 6; size: [number, number, number]; chair: { code: string; name: string; size: [number, number, number]; price: number; auto?: boolean } }
@@ -20,14 +21,13 @@ export function diningOf(d: Design): DiningSet | undefined {
 }
 
 const S = 0.001;
-const loader = new GLTFLoader();
 const cache = new Map<string, Promise<THREE.Object3D>>();
 function model(code: string): Promise<THREE.Object3D> {
   let p = cache.get(code);
   if (!p) {
     p = loader.loadAsync(`${import.meta.env.BASE_URL}props/dining/${code}.glb`).then((g) => {
       g.scene.traverse((o) => { const m = o as THREE.Mesh; if (m.isMesh) m.castShadow = m.receiveShadow = true; });
-      return g.scene;
+      return shareTree(g.scene);     // 복제본들이 형상 · 재질 · 텍스처를 같이 쓴다
     });
     cache.set(code, p);
   }

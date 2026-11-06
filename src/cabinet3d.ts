@@ -6,13 +6,14 @@ import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js
 import { PmEval } from './kjl/resolve';
 import { buildModel, type RenderPart } from './kjl/geometry';
 import { ensure, kjlCatalog, modelOf, texUrl, type ModuleDef } from './kjlLib';
+import { shared } from './dispose';
 
 const loader = new THREE.TextureLoader();
 const texCache = new Map<string, THREE.Texture>();
 export function texture(url: string, srgb = true): THREE.Texture {
   let t = texCache.get(url);
   if (!t) {
-    t = loader.load(url);
+    t = shared(loader.load(url));
     t.wrapS = t.wrapT = THREE.RepeatWrapping;
     t.anisotropy = 8;
     if (srgb) t.colorSpace = THREE.SRGBColorSpace;
@@ -42,7 +43,7 @@ export function partMaterial(key: string, name = ''): THREE.MeshStandardMaterial
   else m = new THREE.MeshStandardMaterial({ map: texture(texUrl(key)), roughness: gloss ? 0.18 : 0.62, metalness: metal ? 0.6 : 0 });
   if (glass) { m.transparent = true; m.opacity = 0.35; m.roughness = 0.05; }
   m.userData.key = key;
-  matCache.set(key, m);
+  matCache.set(key, shared(m));
   return m;
 }
 
@@ -101,10 +102,30 @@ const DP_SWING = /^fridgeTall$/;
 // 망장(2단 인출 바스켓)도 앞으로 빼는 장 — 서랍으로 연다
 const DRAWER_KEYS = /^(drawer\d|islandOpen|basket\d+|tallBasket)$/;
 
+/* 형상 캐시 덜어내기 — 폭 · 변수 조합마다 계산 결과가 쌓인다(방 크기를 끌어 바꾸면 장 폭이 바뀔 때마다 새로).
+ * 다시 그릴 때마다 세대를 올리고(cabinetCacheGeneration), 최근 KEEP_GEN 세대 동안 안 쓴 것을 CACHE_MAX 넘으면 놓는다 */
+const CACHE_MAX = 240, KEEP_GEN = 3;
+let gen = 0;
+const usedAt = new Map<string, number>();
+/** 부엌을 한 번 새로 그리기 시작할 때 — 이번 그리기에서 쓴 것을 표시하는 세대 */
+export function cabinetCacheGeneration() { gen++; }
+/** 다 그린 뒤 — 오래 안 쓴 계산 결과의 형상을 놓는다(지금 화면 · 직전 몇 번 그린 장은 남긴다) */
+export function trimCabinetCache() {
+  if (geoCache.size <= CACHE_MAX) return;
+  for (const [key, c] of geoCache) {
+    if ((usedAt.get(key) ?? 0) > gen - KEEP_GEN) continue;
+    for (const g of c.geos.values()) g.dispose();
+    for (const d of c.doors) for (const g of d.geos.values()) g.dispose();
+    geoCache.delete(key); usedAt.delete(key);
+    if (geoCache.size <= CACHE_MAX * 0.75) break;
+  }
+}
+
 /** 모듈 하나 — W · 도어 변수를 덮어써 계산 */
 export async function buildModule(m: ModuleDef, w: number, door?: { var: string; obs: string }, extra: Record<string, string> = {}): Promise<BuiltModule> {
   const t0 = performance.now();
   const key = `${m.obs}|${w}|${door?.obs ?? ''}|${JSON.stringify(extra)}`;
+  usedAt.set(key, gen);
   let c = geoCache.get(key);
   if (!c) {
     await ensure(m.obs);
@@ -113,7 +134,8 @@ export async function buildModule(m: ModuleDef, w: number, door?: { var: string;
     if (m.W && w) overrides.W = String(w);
     if (door && m.doorVar) overrides[m.doorVar] = JSON.stringify({ obsBrandGoodId: door.obs, versionId: 1 });
     const ev = new PmEval(modelOf(m.obs)!, { catalog: kjlCatalog, overrides });
-    const b = buildModel(ev, { product: kjlCatalog.product });
+    // 단면 — 받아 둔 것이 있으면 스윕 · 로프트 부품(액자 도어 테두리 · 찬넬)이 원본 모양으로(없으면 계산기가 18×18 네모로 대신)
+    const b = buildModel(ev, { product: kjlCatalog.product, profile: kjlCatalog.profile });
     const isDrawer = DRAWER_KEYS.test(m.key);
     // 묶음 — '' = 고정, 그 외 = 문짝 id
     const buckets = new Map<string, Map<string, THREE.BufferGeometry[]>>();
@@ -205,6 +227,9 @@ export async function buildModule(m: ModuleDef, w: number, door?: { var: string;
         : { kind: 'drawer', amt: Math.round((frame.max.z - frame.min.z) * 0.75), pivot: new THREE.Vector3(), geos });
     }
     c = { geos: merge(buckets.get('') ?? new Map()), doors, names, frame, front, gaps: gaps.map(([a, b]) => [a - frame.min.y, b - frame.min.y] as [number, number]) };
+    // 캐시 형상은 여러 번 그린 부엌이 같이 쓴다 — 다 쓴 부엌을 놓을 때(disposeTree) 건너뛰게
+    for (const g of c.geos.values()) shared(g);
+    for (const d of doors) for (const g of d.geos.values()) shared(g);
     geoCache.set(key, c);
   }
   const cc = c;

@@ -284,6 +284,8 @@ export interface BuildOptions {
   /** 단면 조회 — 로프트·스윕 profileData */
   profile?: (id: string) => { w: number; h: number; points: [number, number][] } | undefined;
   product?: (id: string) => { color?: string; texture?: string } | undefined;
+  /** 단면을 못 찾아 18×18 네모로 대신 그렸을 때 — 그 단면 id (도어 깨짐 점검 · tools/probe-profiles.ts) */
+  onMissingProfile?: (id: string) => void;
 }
 
 /** 배열 복제 행렬들 */
@@ -366,6 +368,7 @@ export function buildModel(ev: PmEval, opts: BuildOptions = {}, prefix = '', par
       case 'PrimitiveModel.brepSweepExtend': {
         const pid = ev.str(node, 'profileData');
         const prof = opts.profile?.(pid);
+        if (!prof?.points.length && !hidden && !viewHidden) opts.onMissingProfile?.(pid);
         let section: V2[] = prof?.points.length ? prof.points.map(([x, y]) => [x, y] as V2) : [[-18, 0], [0, 0], [0, 18], [-18, 18]];
         section = scaleProfile(section, ev.numParam(node, 'profileScaleWidth', 0), ev.numParam(node, 'profileScaleHeight', 0));
         section = clipProfile(section, ev.numParam(node, 'height', 0));

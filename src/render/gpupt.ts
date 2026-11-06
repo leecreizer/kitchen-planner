@@ -17,9 +17,11 @@ type PT = InstanceType<typeof WebGPUPathTracer>;
 let pt: PT | null = null;
 let den: InstanceType<typeof OIDNDenoiser> | null = null;
 let saved: { tm: THREE.ToneMapping; exp: number } | null = null;
+let owner: WebGPURenderer | null = null;
 
 function make(renderer: WebGPURenderer) {
   if (pt) return pt;
+  owner = renderer;
   pt = new WebGPUPathTracer(renderer);
   pt.renderScale = GPUPT.renderScale;
   pt.maxSamples = GPUPT.maxSamples;
@@ -67,3 +69,35 @@ export function hideGpuPt(renderer: WebGPURenderer) {
 /** 매 프레임 — 다 쌓이면(6 샘플 + 노이즈 제거) 마지막 그림만 다시 내보낸다 */
 export function renderGpuPt() { pt?.renderSample(); }
 export const gpuPtCamera = () => pt?.updateCamera();
+/** 다 그렸는지 — 모든 화소가 샘플을 다 쌓고 노이즈 제거 · 서서히 보이기까지 끝났으면 같은 그림을 다시 내보낼 필요가 없다
+ *  (캔버스가 마지막 그림을 그대로 보여 준다). 노이즈 제거 완료는 라이브러리 내부 상태(complete)를 읽는다 */
+export function gpuPtDone() {
+  const p = pt as any;
+  if (!p?._lastSampleCounts) return false;
+  return p._lastSampleCounts.min >= p.maxSamples && (!p._denoiser || p._denoiser.complete) && p.fadeState >= 1;
+}
+/** 경로 추적이 만든 저장 버퍼(BVH · 광선 대기열 · 조명 표) — 라이브러리 dispose 는 이것을 놓지 않는다. three 는 형상에 붙지 않은
+ *  저장 버퍼를 스스로 해제하지 않아 정리해도 115MB 가 남았다(실측 2026-11-06). 경로 추적 객체 아래만 훑는다(장면 · 렌더러 · 텍스처는 건드리지 않음) */
+function storageBuffersOf(root: unknown): object[] {
+  const out = new Set<object>(), seen = new Set<object>();
+  const walk = (o: any, depth: number) => {
+    if (!o || typeof o !== 'object' || seen.has(o) || depth > 10) return;
+    seen.add(o);
+    if (o.isStorageBufferAttribute || o.isStorageInstancedBufferAttribute) { out.add(o); return; }
+    if (o.isObject3D || o.isTexture || o.isRenderTarget || o.isRenderer || o.isWebGPURenderer || o.isBufferGeometry || o.isMaterial && o !== (root as any).material || ArrayBuffer.isView(o) || o instanceof ArrayBuffer || o instanceof Node) return;
+    if (o instanceof Map || o instanceof Set) { for (const v of o.values()) walk(v, depth + 1); return; }
+    for (const k of Object.keys(o)) if (k !== '_renderer' && k !== 'renderer' && k !== '_scene' && k !== 'scene') walk(o[k], depth + 1);
+  };
+  walk(root, 0);
+  return [...out];
+}
+/** 경로 추적을 통째로 놓는다(BVH · 텍스처 묶음 · OIDN 신경망 · FSR · 저장 버퍼) — 끄고 한동안 다시 안 켤 때. 다시 켜면 처음부터 */
+export function disposeGpuPt() {
+  if (!pt) return;
+  const bufs = storageBuffersOf(pt);
+  try { pt.dispose(); } catch (e) { console.warn('[경로 추적] 정리', e); }
+  const attrs = (owner as any)?._attributes;
+  if (attrs) for (const b of bufs) { try { attrs.delete(b); } catch { /* 이미 놓음 */ } }
+  pt = null; den = null;
+  if ((window as any).__gpupt) delete (window as any).__gpupt;
+}

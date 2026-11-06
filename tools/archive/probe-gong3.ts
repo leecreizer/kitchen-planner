@@ -1,9 +1,9 @@
 // 레드 판(공도어 표시) 크기 — 장 전체 틀과 비교
 import { readFileSync } from 'node:fs';
 import * as THREE from 'three';
-import { setReader, loadCatalog, ensure, modelOf, kjlCatalog } from '../src/kjlLib';
-import { PmEval } from '../src/kjl/resolve';
-import { buildModel } from '../src/kjl/geometry';
+import { setReader, loadCatalog, ensure, modelOf, kjlCatalog } from '../../src/kjlLib';
+import { PmEval } from '../../src/kjl/resolve';
+import { buildModel } from '../../src/kjl/geometry';
 setReader(async (p) => JSON.parse(readFileSync(`public/kjl/${p}`, 'utf-8')));
 const cat = await loadCatalog();
 const K2L = new THREE.Matrix4().set(1, 0, 0, 0, 0, 0, 1, 0, 0, -1, 0, 0, 0, 0, 0, 1);

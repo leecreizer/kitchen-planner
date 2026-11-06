@@ -138,7 +138,12 @@ function loadPost(): PostSettings {
   try {
     let raw = localStorage.getItem(POST_KEY);
     if (!raw) for (const k of POST_OLD) { raw = localStorage.getItem(k); if (raw) { localStorage.setItem(POST_KEY, raw); break; } }
-    return { ...POST_DEFAULTS, ...JSON.parse(raw || '{}') };
+    const saved = JSON.parse(raw || '{}');
+    // 예전 기본값(그늘도 SSGI)으로 저장된 설정 — 한 번만 지금 기본(그늘 GTAO)으로. SSGI 그늘은 간접광과 같은 반경(4.2m)이라
+    // 천장 · 벽 · 상부장 이음부마다 두꺼운 그늘 띠가 졌다(사용자 화면 2026-11-06 · 같은 시점 비교로 확인). 메뉴에서 다시 고르면 그대로 쓴다
+    if (saved.aoKind === 'ssgi' && !saved.aoV) saved.aoKind = 'both';
+    saved.aoV = 2;
+    return { ...POST_DEFAULTS, ...saved };
   } catch { return { ...POST_DEFAULTS }; }
 }
 function savePost(p: PostSettings) {
@@ -296,12 +301,14 @@ function webgpu(scene: THREE.Scene, camera: THREE.PerspectiveCamera, mainLight?:
         // 실내 — 화면 밖으로 나간 광선은 검게 흐리지 않고 0(환경맵 반사가 그대로 남는다). 방 크기(m)에 맞춘 거리·두께
         s.screenEdgeFadeBlack = true; s.quality.value = 0.25; s.maxDistance.value = 3; s.thickness.value = 0.05; s.maxLuminance.value = 35;
         const tr: any = temporalReproject(s, depth, normalTex, vel, camera, { mode: 'specular', accumulate: false } as any);
+        (me as any).ssrNodes = [s, tr];
         tr.maxFrames.value = 16; tr.clampIntensity.value = 0.25; tr.flickerSuppression.value = 1; tr.hitPointReprojection.value = true;
         const dn: any = recurrentDenoise(tr, camera, { depth, normal: normalTex, raw: s, metalRoughness: metalRough, mode: 'specular', accumulate: true } as any);
         dn.alphaSource = 'raylength';
         dn.lumaPhi.value = 0.75; dn.depthPhi.value = 20; dn.normalPhi.value = 0.3; dn.roughnessPhi.value = 100; dn.radius.value = 1.5;
         dn.alphaPhi.value = 5; dn.strength.value = 0.725; dn.adapt.value = 0.5;
         s.setHistory(dn, vel); tr.setHistoryTexture(dn);
+        (me as any).ssrNodes.push(dn);
         (me as any).ssr = s; (me as any).ssrDenoise = dn; (me as any).ssrRough = [ssrRoughLo, ssrRoughHi];
         // 매끈한 면에만 — 반쯤 거친 면(천·책 등 거칠기 0.5 안팎이 많다)은 실내 환경맵 반사가 이미 있어 SSR 을 더하면 겹쳐 번들거렸다
         // (안방 회색 담요가 얼음처럼 반짝, 2026-11-03 실측 — 실제 원인은 담요 위 거칠기 0 투명 덧층, furnish.ts hvRule 에서 천 거칠기로)
@@ -314,7 +321,7 @@ function webgpu(scene: THREE.Scene, camera: THREE.PerspectiveCamera, mainLight?:
         pre.setMRT(mrt({ output: velocity }));
         const sp: any = sss(pre.getTextureNode('depth'), camera, mainLight!);
         sp.maxDistance.value = 0.15; sp.thickness.value = 0.02; sp.quality.value = 0.5; sp.useTemporalFiltering = post.traa;
-        (me as any).sss = sp;
+        (me as any).sss = sp; (me as any).sssNodes = [pre, sp];
         return builtinShadowContext(sp.getTextureNode().sample(screenUV).r, mainLight!);
       });
       // 켜고 끄는 항목(SSGI·노이즈 제거·TRAA·블룸·톤매핑)은 그래프를 다시 만든다. TRAA·블룸 노드는 버퍼를 가지므로 경우별로 한 번만 만든다
@@ -339,7 +346,20 @@ function webgpu(scene: THREE.Scene, camera: THREE.PerspectiveCamera, mainLight?:
       pipeline.outputColorTransform = false;       // 톤매핑은 아래 renderOutput 에서 — 그 뒤에 색 보정
       rebuild = () => {
         (scenePass as any).contextNode = post.sss && mainLight ? sssContext() : null;
-        let c: any = post.traa ? getTraa(withSSR(beauty())) : withSSR(beauty());
+        // 안 쓰게 된 버퍼 놓기 — 실시간 ↔ ④ 고품질(SSR 켜고 끔)을 오갈 때마다 TRAA 이력(화면 크기 3장)과 SSR 버퍼가 그대로 남아
+        // GPU 메모리가 325 → 365MB 로 늘었다(실측 2026-11-06). 다시 켜면 새로 만든다(셰이더는 keepShaderCache 가 붙잡아 다시 짓지 않음)
+        if (!post.ssr && cache.has('ssr')) {
+          for (const n of (me as any).ssrNodes ?? []) n.dispose?.();
+          for (const k of [...cache.keys()]) if (k === 'ssr' || k.startsWith('ssr+')) cache.delete(k);
+          (me as any).ssrNodes = (me as any).ssr = (me as any).ssrDenoise = undefined;
+        }
+        if (!post.sss && cache.has('sss')) {
+          for (const n of (me as any).sssNodes ?? []) n.dispose?.();
+          cache.delete('sss'); (me as any).sssNodes = (me as any).sss = undefined;
+        }
+        const input = withSSR(beauty());
+        if (post.traa) for (const [b, t] of traaOf) if (b !== input) { t.dispose(); traaOf.delete(b); }
+        let c: any = post.traa ? getTraa(input) : input;
         c = vec4(c.rgb.mul(depthFactor), c.a);
         if (post.bloom) c = vec4(c.rgb.add(glow.rgb), c.a);
         const shown: any = renderOutput(c);          // 렌더러의 톤매핑·노출 → sRGB

@@ -1,5 +1,5 @@
 // 프롬프트 — 말로 준 조건을 설계 설정으로 (규칙 해석 · LLM 아님). 알아들은 것과 못 알아들은 말을 돌려준다
-import type { KitchenCatalog } from './kjlLib';
+import { usableDoors, type KitchenCatalog } from './kjlLib';
 import { newOpening, viewWalls, type Want, type Design, type LayoutKind, type OpeningKind, type StyleKind, type WallId } from './plan';
 
 const LAYOUT: [RegExp, LayoutKind, string][] = [
@@ -74,7 +74,7 @@ export function applyPrompt(text: string, d: Design, cat: KitchenCatalog): { app
       if (!/수납/.test(t)) d.style = 'cafe';
       if (!/아일랜드/.test(t)) d.island = false;
       if (d.layout === 'U' && !/ㄷ\s*자|디귿/.test(t)) d.layout = 'L';
-      const g = cat.grades.find((x) => x.id === d.grade), white = g?.doors.find((x) => /white|wh\b|화이트|cotton|크림/i.test(x.name));
+      const g = cat.grades.find((x) => x.id === d.grade), white = g && usableDoors(g).find((x) => /white|wh\b|화이트|cotton|크림/i.test(x.name));
       if (white && !COLOR.some(([re]) => re.test(t))) d.door = white.obs;
       want('open');
       applied.push('답답하지 않게 — 상부는 오픈 선반 · 폴딩장, 밝은 도어, 아일랜드 없이 통로 넓게');
@@ -104,7 +104,7 @@ export function applyPrompt(text: string, d: Design, cat: KitchenCatalog): { app
     for (const [re, v, name] of GRADE) if (re.test(p)) { d.grade = v; applied.push(name); mark(p); break; }
     const g = cat.grades.find((x) => x.id === d.grade);
     for (const [re, pat, name] of COLOR) if (re.test(p) && !/상판|타일|벽|바닥/.test(p)) {
-      const door = g?.doors.find((x) => pat.test(x.name));
+      const door = g && usableDoors(g).find((x) => pat.test(x.name));   // 단면이 빠져 깨져 보이는 도어는 고르지 않는다
       if (door) { d.door = door.obs; applied.push(`도어 ${name}`); } else applied.push(`도어 ${name} (이 그레이드엔 없음)`);
       mark(p); break;
     }

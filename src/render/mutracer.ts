@@ -12,7 +12,7 @@ import { Engine, RenderLoop, THREESync } from '@meimu/mutracer';
 const MAX_SAMPLES = 64;
 const WEIGHTS = `${import.meta.env.BASE_URL}oidn/`;     // OIDN 가중치(public/oidn) — 패키지 기본 경로는 Vite 개발 서버에서 못 읽는다
 type Controls = { update(): unknown; addEventListener(t: 'start' | 'end', f: () => void): void; removeEventListener(t: 'start' | 'end', f: () => void): void };
-type Inst = { engine: Engine; loop: RenderLoop; canvas: HTMLCanvasElement; ready: boolean; hold: Hold };
+type Inst = { engine: Engine; loop: RenderLoop; sync: THREESync; canvas: HTMLCanvasElement; ready: boolean; hold: Hold; ro: ResizeObserver };
 let inst: Inst | null = null;
 let shown = false;
 let onStatus: (text: string) => void = () => {};
@@ -148,15 +148,15 @@ function create(host: HTMLElement, scene: THREE.Scene, camera: THREE.Perspective
       denoiser: { type: 'jnlm', schedule: 'progressive' },
     },
   } as any);
-  const me: Inst = { engine, loop, canvas, ready: false, hold: makeHold(host, canvas) };
+  const me: Inst = { engine, loop, sync, canvas, ready: false, hold: makeHold(host, canvas), ro: new ResizeObserver(() => resize()) };
   // 렌더 루프가 화면에 내보내는 바로 그 순간에 덮개를 판단·복사한다(같은 프레임 — 어두운 첫 화면이 한 장도 새지 않게)
   const present = engine.display.present.bind(engine.display);
   // 화면 설정(화이트밸런스·채도 등)은 여기서 바꾸지 않는다 — 바꾸면 MuTracer 가 노이즈 제거본을 지우고(_displayChanged),
   // 다 쌓인 뒤면 다시 만들지 않아 검정 잡티가 남고 깜빡였다(2026-10-29 멈춘 그림 색 보정 시도 → 되돌림)
   engine.display.present = (r: Parameters<typeof present>[0]) => { const shownRender = present(r); if (shownRender && shown) holdAfterPresent(me, shownRender); return shownRender; };
   // 캔버스는 화면 실제 픽셀(배율 포함) — 렌더 해상도는 위 resolutionScale 로 따로
-  const resize = () => engine.display.setSize(Math.max(1, Math.round(host.clientWidth * dpr)), Math.max(1, Math.round(host.clientHeight * dpr)));
-  new ResizeObserver(resize).observe(host); resize();
+  function resize() { engine.display.setSize(Math.max(1, Math.round(host.clientWidth * dpr)), Math.max(1, Math.round(host.clientHeight * dpr))); }
+  me.ro.observe(host); resize();
   const update = () => {
     if (!me.ready && loop.samples > 0) {
       me.ready = true;
@@ -219,6 +219,16 @@ export function hideMutracer() {
   inst.hold.on = false; inst.hold.has = false; inst.hold.canvas.style.opacity = '0';
   inst.canvas.style.filter = '';
   if (inst.ready) inst.loop.stop();       // 누적은 남기고 멈춤 — 다시 켜면 바로 이어진다
+}
+
+/** 엔진을 통째로 놓는다(GPU 장치 · 장면 · 누적 버퍼 · 신경망) — 끄고 한동안 다시 안 켤 때(scene releaseIdle). 다시 켜면 처음부터 */
+export function disposeMutracer() {
+  if (!inst || shown) return;
+  const i = inst; inst = null;
+  i.ro.disconnect();
+  for (const f of [() => i.loop.dispose(), () => i.sync.dispose(), () => i.engine.dispose()]) { try { f(); } catch (e) { console.warn('[MuTracer] 정리', e); } }
+  i.canvas.remove(); i.hold.canvas.remove();
+  if ((window as any).__mutracer?.engine === i.engine) delete (window as any).__mutracer;
 }
 
 function statusText(s: string) {

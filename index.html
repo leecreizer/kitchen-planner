@@ -19,6 +19,7 @@
         <button id="t-path" data-tip="실사"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M11 3.5l1.8 5.2 5.2 1.8-5.2 1.8L11 17.5l-1.8-5.2L4 10.5l5.2-1.8z"/><path d="M18.5 15l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z"/></svg></button>
         <button id="t-sun" data-tip="조명"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2.2M12 19.3v2.2M2.5 12h2.2M19.3 12h2.2M5.3 5.3l1.6 1.6M17.1 17.1l1.6 1.6M5.3 18.7l1.6-1.6M17.1 6.9l1.6-1.6"/></svg></button>
         <button id="t-post" data-tip="후처리"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg></button>
+        <button id="t-perf" data-tip="성능"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 17.5a8.5 8.5 0 1 1 17 0"/><path d="M12 17.5l4-5"/><circle cx="12" cy="17.5" r="1.2"/></svg></button>
         <button id="t-plan" class="on" data-tip="평면도"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 4h16v16H4z"/><path d="M4 14h6v6M14 4v6h6"/></svg></button>
       </div>
       <div id="look-pop" class="mode-pop" hidden>
@@ -35,6 +36,15 @@
         <button data-mode="hq"><b>④ 실시간 고품질 · SSR + SSS</b><small>화면 반사 · 접촉 그림자 · 바로 반영 · 무거움</small></button>
         <button data-mode="gpupt"><b>⑤ 경로 추적 · three-gpu-pathtracer</b><small>WebGPU · 절반 해상도 6샘플 + OIDN + FSR</small></button>
       </div>
+      <div id="perf-pop" class="mode-pop" hidden>
+        <div class="sun-title">성능 <small>PC 사양에 맞춰 화질 조절</small></div>
+        <button data-perf="auto"><b>자동 (권장)</b><small id="perf-auto-sub">그래픽 카드로 고르고, 돌릴 때 버벅이면 한 단계 낮춤</small></button>
+        <button data-perf="high"><b>고품질</b><small>선명도 1.5배 · 간접광(SSGI) 높음 · 블룸 · 촘촘한 라이트맵</small></button>
+        <button data-perf="mid"><b>보통</b><small>선명도 1.25배 · 간접광 보통 · 그림자 2048</small></button>
+        <button data-perf="low"><b>저사양 (노트북)</b><small>선명도 1배 · 간접광 대신 AO 만 · 블룸 끔 · 라이트맵 성기게</small></button>
+        <p class="note" id="perf-note"></p>
+      </div>
+      <div id="perf-toast" hidden></div>
       <div id="samples" hidden></div>
       <div id="sun-panel" hidden>
         <div class="sun-title">조명 <small>바꾸는 즉시 반영</small></div>
@@ -60,9 +70,10 @@
       </div>
       <div id="post-panel" hidden></div>
       <div id="plan-box">
-        <div class="plan-head"><b>평면도</b><small>휠 확대 · 빈 곳 끌어 이동 · 더블클릭 맞춤</small><span class="plan-zoom"><button data-pz="in" title="확대">+</button><button data-pz="out" title="축소">−</button><button data-pz="fit" title="방 전체 맞춤">맞춤</button></span></div>
+        <div class="plan-head"><b>평면도</b><small>휠 확대 · 빈 곳 끌어 이동 · 더블클릭 맞춤</small><span class="plan-zoom"><button id="pz-flow" class="on" title="동선 정보 — 작업 삼각형 변 길이 · 통로 폭 · 이동 경로">동선</button><button data-pz="in" title="확대">+</button><button data-pz="out" title="축소">−</button><button data-pz="fit" title="방 전체 맞춤">맞춤</button></span></div>
         <div class="plan-resize" title="끌어서 평면도 창 크기 조절"></div>
         <div id="plan"></div>
+        <div id="plan-flow" class="plan-flow"></div>
       </div>
       <!-- 프롬프트 — 붙박이장 플래너처럼 화면 아래에 떠 있음 -->
       <div id="prompt-bar">
@@ -75,13 +86,22 @@
           <button data-ex="아일랜드에서 식사도 하고 싶어요">아일랜드에서 식사</button>
           <button data-ex="요리를 자주 해요">요리를 자주 해요</button>
         </div>
-        <div class="prompt-row"><input id="prompt" placeholder="원하는 부엌을 말해 주세요 — 예) 수납 많이, 답답하지 않게, 동선이 편하게, 카페 스타일" autocomplete="off"><button id="prompt-go">적용</button></div>
+        <div class="prompt-row"><select id="ai-provider" title="말을 해석할 방법 — 규칙(앱 안) 또는 AI(개발 서버에 키가 있어야)"><option value="rule">규칙</option></select><select id="ai-model" title="AI 모델" hidden></select><input id="prompt" placeholder="원하는 부엌을 말해 주세요 — 예) 수납 많이, 답답하지 않게, 동선이 편하게, 카페 스타일" autocomplete="off"><button id="prompt-go">적용</button></div>
       </div>
       <div id="status" hidden></div>
       <div id="item-info" hidden></div>
     </section>
     <aside id="panel">
       <h1>부엌 셀프 설계 <small>쿠지알러 부엌 원본 · 자동 배치</small></h1>
+      <div class="file-bar">
+        <button id="f-save" class="btn-mini light" title="설계 파일로 저장 (Ctrl+S) — 공간 · 구조 · 직접 고친 장까지">저장</button>
+        <button id="f-open" class="btn-mini light" title="설계 파일 불러오기 (Ctrl+O)">불러오기</button>
+        <button id="f-bom" class="btn-mini light" title="견적 데이터(부품 목록) CSV — 장 원본 ID · 규격 · 도어 · 상판 · 벽 마감 · 가전 · 식탁">견적</button>
+        <span class="fb-sep"></span>
+        <button id="h-undo" class="btn-mini light" title="되돌리기 (Ctrl+Z)" disabled>↶ 되돌리기</button>
+        <button id="h-redo" class="btn-mini light" title="다시 하기 (Ctrl+Y)" disabled>↷ 다시</button>
+        <input id="f-input" type="file" accept=".json,application/json" hidden>
+      </div>
       <section class="ai">
         <div class="ai-head"><b>AI 자동 배치</b><small id="ai-sub"></small><button id="fix-reset" class="btn-mini light" title="옮긴 싱크 · 식기세척기 · 쿡탑 자리를 지우고 자동으로">자리 초기화</button><button id="ai-run" class="btn-mini">다시 배치</button></div>
         <div id="cands"></div>

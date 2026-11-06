@@ -1,8 +1,8 @@
 import { readFileSync } from 'node:fs';
 import { Box3 } from 'three';
-import { setReader, loadCatalog, ensure, modelOf, kjlCatalog } from '../src/kjlLib';
-import { PmEval } from '../src/kjl/resolve';
-import { buildModel } from '../src/kjl/geometry';
+import { setReader, loadCatalog, ensure, modelOf, kjlCatalog } from '../../src/kjlLib';
+import { PmEval } from '../../src/kjl/resolve';
+import { buildModel } from '../../src/kjl/geometry';
 setReader(async (p) => JSON.parse(readFileSync(`public/kjl/${p}`, 'utf-8')));
 const cat = await loadCatalog();
 const g = cat.grades[0];

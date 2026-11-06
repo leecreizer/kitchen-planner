@@ -36,9 +36,30 @@ const models = new Map<string, PmModel>();
 const pending = new Map<string, Promise<void>>();
 const missing = new Set<string>();
 
+/* 단면(프로파일) — 스윕 · 로프트 부품(액자 도어 테두리 · 찬넬 · 몰딩)의 쿠지알러 단면. profiles.json(tools/build_profiles.py · probe-profiles.ts).
+ * 좌표가 없으면 계산기가 18×18 네모로 대신 그려 도어 앞면이 깨져 보인다 — 받은 단면만 profiles 에 있다 */
+export interface ProfileData { name: string; w: number; h: number; points: [number, number][] }
+let prof: { profiles: Record<string, ProfileData>; info: Record<string, { name: string; img?: string }>; needs: Record<string, string[]> } = { profiles: {}, info: {}, needs: {} };
 export async function loadCatalog(): Promise<KitchenCatalog> {
-  cat ??= (await readJson('catalog.json')) as KitchenCatalog;
+  if (!cat) {
+    const [c, p] = await Promise.all([readJson('catalog.json'), readJson('profiles.json').catch(() => null)]);
+    cat = c as KitchenCatalog;
+    if (p) { const q = p as Partial<typeof prof>; prof = { profiles: q.profiles ?? {}, info: q.info ?? {}, needs: q.needs ?? {} }; }
+  }
   return cat;
+}
+export const profileOf = (id: string): ProfileData | undefined => prof.profiles[id];
+/** 도어 쪽 단면(이름에 「도어」) 중 좌표가 없는 것의 이름 — 그 도어는 몰딩 · 손잡이 일부가 18×18 네모로 근사된다. 없으면 [] */
+export const doorGaps = (obs: string): string[] =>
+  (prof.needs[obs] ?? []).filter((p) => !prof.profiles[p] && /도어/.test(prof.info[p]?.name ?? '')).map((p) => prof.info[p]?.name ?? p);
+/** 앞판 자체를 단면 스윕으로 만드는 도어(맨하탄 MHT · 아티잔) — 단면이 없으면 앞판이 떠 있고 속이 보일 만큼 깨진다(같은 시점 확인 2026-11-06).
+ *  첼시 · 그레이스 · 베일 · 페이지는 손잡이 · 테두리만 근사되고 앞판은 정상이라 고를 수 있게 둔다 */
+const FACE = /맨하탄|아티산/;
+export const doorBroken = (obs: string): string[] => doorGaps(obs).filter((n) => FACE.test(n));
+/** 고를 수 있는 도어 — 깨져 보이는 도어는 뺀다(모두 그렇면 그대로) */
+export function usableDoors(g: GradeDef): DoorDef[] {
+  const ok = g.doors.filter((x) => !doorBroken(x.obs).length);
+  return ok.length ? ok : g.doors;
 }
 export const catalogNow = () => cat!;
 
@@ -82,4 +103,4 @@ export function product(id: string) {
   return { name: p.name ?? id, model: p.model, ...(p.tex ? { texture: id } : {}) };
 }
 
-export const kjlCatalog: Catalog = { model: modelOf, product };
+export const kjlCatalog: Catalog = { model: modelOf, product, profile: profileOf };
