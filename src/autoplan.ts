@@ -5,7 +5,7 @@
 //       조리 공간 · 수납 · 채광 · 동선)와 설명.
 // 모든 길이 mm. 모듈 폭 선택지는 원본 W 변수(catalog.modules[].W)를 따른다.
 import type { KitchenCatalog, ModuleDef, Series } from './kjlLib';
-import { byPriority, nudge, rowGroup } from './reorder';
+import { byPriority, FILL_MAX, FILL_MIN, nudge, rowGroup, widenThinFills } from './reorder';
 import { applianceOf, hoodKindOf } from './catalog';
 import {
   OPENING_INFO, nextWall, prevWall, viewWalls, wallFrame, wallLength, wallName, wallPoint,
@@ -163,7 +163,8 @@ function makeRuns(room: Room, walls: WallId[], openings: Opening[] = [], notes: 
   return walls.map((w) => runs.get(w)!);
 }
 
-/** 벽 구간에서 막힌 곳 — 문·통로는 위아래 전부, 창은 상부장·키큰장만(창대가 낮으면 하부장도) */
+/** 벽 구간에서 막힌 곳 — 문·통로는 위아래 전부, 창은 상부장·키큰장만(창대가 낮으면 하부장도).
+ *  추가 영역(padL · padR)은 개구부 종류와 상관없이 위아래 전부 — 그 공간엔 장을 두지 않는다(사용자 지시 2026-11-06) */
 function blocks(op: Opening[], wall: WallId) {
   const base: [number, number][] = [], upper: [number, number][] = [];
   for (const o of op) {
@@ -171,9 +172,13 @@ function blocks(op: Opening[], wall: WallId) {
     const span: [number, number] = [o.t - 50, o.t + o.w + 50];
     upper.push(span);
     if (o.kind !== 'window' || o.sill < 930) base.push(span);
+    if (o.padL) { const s: [number, number] = [o.t - 50 - o.padL, o.t]; base.push(s); upper.push(s); }
+    if (o.padR) { const s: [number, number] = [o.t + o.w, o.t + o.w + 50 + o.padR]; base.push(s); upper.push(s); }
   }
   return { base, upper };
 }
+/** 장 편집(빈 공간에 장 추가)에서도 같은 막힘 구간을 쓴다 */
+export const wallBlocks = blocks;
 function subtract(a: number, b: number, cut: [number, number][]): [number, number][] {
   let segs: [number, number][] = [[a, b]];
   for (const [c0, c1] of cut) {
@@ -330,6 +335,8 @@ function planOne(d: Design, cat: KitchenCatalog, series: Series, v: Variant, use
   const islStyle: IslandStyle = d.islandCfg.style ?? (d.style === 'storage' ? 'double' : 'basic');
   const twoSided = islStyle === 'double';
   const aisle = 1100;
+  /** 아일랜드 끝과 옆 줄(ㄷ자 · ㄱ자 팔) 상판 사이 통로 */
+  const islandPass = 900;
   // 연계형 · 원형 식탁 — 붙지 않은 끝(기본 t = len 쪽)에 이만큼 더 나간다. 자리 잡을 때 그 길이까지 방 안 · 줄 안으로
   const tableExt = islStyle === 'table' ? ISLAND_TABLE.len : islStyle === 'round' ? ISLAND_TABLE.round - ISLAND_TABLE.overlap : 0;
   let island: IslandInfo | undefined;
@@ -397,15 +404,54 @@ function planOne(d: Design, cat: KitchenCatalog, series: Series, v: Variant, use
       const opposite = runs.find((r) => r.wall === ((main.wall + 2) % 4));
       const idep = twoSided ? BASE_D * 2 : BASE_D + 20 + cfg.over;
       const need = COUNTER_D + aisle + idep + (opposite ? COUNTER_D + 1000 : 900);
-      const fitLen = Math.min(len, Math.floor((main.b - main.a - 600 - tableExt) / 100) * 100);
       const n: [number, number] = [-main.frame.n[0], -main.frame.n[1]];
       const rot = rotOfN(n);
+      // 아일랜드 띠(긴 줄 앞 aisle 너머 · 아일랜드 깊이)를 가로지르는 옆 줄 = ㄷ자 · ㄱ자의 팔. 아일랜드는 팔 사이에만, 팔 상판 앞에서 끝마다 통로 islandPass.
+      //   예전엔 긴 줄 길이 − 600 으로만 잡아 ㄷ자(방 가로 3,600)에서 2,400 아일랜드 양 끝이 팔에 닿고 정면 장 앞 바닥이 갇혔다(사용자 2026-11-06 3번).
+      //   팔 깊이는 상판(620) — 냉장고(약 720)가 그 띠에 서면 통로가 100 쯤 좁다
+      const tOf = (p: [number, number]) => dot([p[0] - main.frame.o[0], p[1] - main.frame.o[1]], main.frame.dir);
+      const uOf = (p: [number, number]) => dot([p[0] - main.frame.o[0], p[1] - main.frame.o[1]], main.frame.n);
+      const band = [COUNTER_D + aisle - (COUNTER_D - BASE_D), COUNTER_D + aisle + idep], mid = (main.a + main.b) / 2;
+      let lo = main.a, hi = main.b, armLo: (typeof runs)[number] | null = null, armHi: (typeof runs)[number] | null = null;
+      for (const r of runs) {
+        if (r === main || Math.abs(dot(r.frame.dir, main.frame.n)) < 0.99) continue;
+        const cs = [[r.a, 0], [r.b, 0], [r.a, COUNTER_D], [r.b, COUNTER_D]].map(([t, u]) => P(r.frame, t, u));
+        if (Math.max(...cs.map(uOf)) <= band[0] || Math.min(...cs.map(uOf)) >= band[1]) continue;
+        const t0 = Math.min(...cs.map(tOf)), t1 = Math.max(...cs.map(tOf));
+        if (t1 <= mid) { if (t1 > lo) { lo = t1; armLo = r; } } else if (t0 >= mid && t0 < hi) { hi = t0; armHi = r; }
+      }
+      // 팔이 없는 끝은 예전처럼 줄 끝에서 300
+      const padLo = armLo ? islandPass : 300, padHi = armHi ? islandPass : 300;
+      const fitLen = Math.min(len, Math.floor((hi - lo - padLo - padHi - tableExt) / 100) * 100);
       if (across >= need && fitLen >= 1200) {
-        const c = P(main.frame, (main.a + main.b) / 2, COUNTER_D + aisle + BASE_D / 2);
+        const c = P(main.frame, (lo + padLo + hi - padHi) / 2, COUNTER_D + aisle + BASE_D / 2);
         // 식탁까지 한 덩어리로 가운데 — 아일랜드 가운데를 식탁 반대쪽으로 반만큼
         const fd = islandFrame(c[0], c[1], rot, fitLen).dir;
         c[0] -= fd[0] * tableExt / 2; c[1] -= fd[1] * tableExt / 2;
         island = { cx: c[0], cz: c[1], rot, len: fitLen, frame: islandFrame(c[0], c[1], rot, fitLen) };
+        if (fitLen < len && (armLo || armHi)) reasons.push(`아일랜드 길이 ${fitLen}mm(설정 ${len}) — 옆 장과 끝마다 통로 ${islandPass}mm`);
+      } else if (across >= need && (armLo || armHi) && !noAttach) {
+        // 반도형(사용자 2026-11-09 결정 A) — 끝마다 통로를 두면 1,200 이 안 되는 좁은 ㄷ자. 팔 하나의 장 앞면에 붙이고(코너장 ㄱ자 연결) 반대 끝에만 통로.
+        //   붙임은 사용자가 옮겨 붙일 때와 같은 길(pos)로 — 코너장 자리가 싱크 · 냉장고 · 창 · 문에 걸려 안 붙으면 다른 팔, 둘 다 안 되면 뺀다(C)
+        const tries: Candidate[] = [];
+        const narrowWhy = `${armLo && armHi ? '양쪽 장 사이' : '옆 장과 벽 사이'}가 좁아(${Math.round(hi - lo)}mm)`;
+        for (const [arm, side] of [[armLo, 0], [armHi, 1]] as const) {
+          if (!arm) continue;
+          const face = side === 0 ? lo - (COUNTER_D - BASE_D) : hi + (COUNTER_D - BASE_D);   // 팔 장 앞면
+          // 열린 끝은 맞은편이 팔이 아니어도(ㄱ자 — 줄 끝 벽) 통로를 둔다. 한 끝을 붙였으니 그쪽마저 막히면 장 앞 바닥이 갇힌다
+          const far = side === 0 ? hi - islandPass : lo + islandPass;
+          const Lp = Math.min(len, Math.floor((Math.abs(far - face) - tableExt) / 100) * 100);
+          if (Lp < 1200) continue;
+          const t0 = side === 0 ? face : face - Lp;
+          const c = P(main.frame, t0 + Lp / 2, COUNTER_D + aisle + BASE_D / 2);
+          const r = planOne({ ...d, islandCfg: { ...cfg, len: Lp, pos: { x: c[0], z: c[1], rot } }, _islShift: 2 } as Design, cat, series, v, useFix, false);
+          if (r?.island?.attached == null) continue;
+          const pass = side === 0 ? hi - (face + Lp + tableExt) : face - Lp - tableExt - lo;
+          r.reasons.push(`${narrowWhy} 아일랜드를 ${wallName(d.openWall, arm.wall)} 장에 붙인 반도형으로 — 길이 ${Lp}mm${Lp < len ? `(설정 ${len})` : ''}, 반대쪽 통로 ${Math.round(pass)}mm`);
+          tries.push(r);
+        }
+        if (tries.length) return tries.sort((p, q) => q.score - p.score)[0];
+        warnings.push(`${narrowWhy} 아일랜드를 넣지 않았습니다 — 끝마다 통로 ${islandPass}mm를 두면 1,200mm보다 짧고, 장에 붙일 자리도 없습니다`);
       } else {
         // 통로가 좁아도 빼지 않는다 — 빈 바닥 가운데에 놓고 알림 (예전엔 말없이 빠져 아일랜드가 사라진 것처럼 보였다)
         const far = opposite ? across - COUNTER_D : across;
@@ -906,8 +952,8 @@ function planOne(d: Design, cat: KitchenCatalog, series: Series, v: Variant, use
         const w0 = rest.map((x) => x.w);
         let per = k ? Math.max(50, Math.min(150, Math.round(F / k / 10) * 10)) : 0;
         let left = adjust(k && atStart && !atEnd ? rest : rest.slice().reverse(), F - per * k);   // 휠라와의 차이 → 장 폭
-        // 장이 다 못 받은 만큼은 휠라가 (10 ~ 150)
-        if (left && k) { const p2 = Math.max(10, Math.min(150, per + Math.round(left / k / 10) * 10)); left -= (p2 - per) * k; per = p2; }
+        // 장이 다 못 받은 만큼은 휠라가 (30 ~ 150)
+        if (left && k) { const p2 = Math.max(FILL_MIN, Math.min(FILL_MAX, per + Math.round(left / k / 10) * 10)); left -= (p2 - per) * k; per = p2; }
         if (!k && left) { rest.forEach((x, i) => { x.w = w0[i]; }); continue; }   // 벽 없는 줄인데 장이 못 받으면 그대로
         // 휠라 — 옆 장이 낮은 상부장(창 위)이면 그 높이를 따른다
         const mk = (w: number, nb?: Item): Item => ({ key: lv === 'wall' ? 'wfill50' : 'bfill50', level: lv, frame: run.frame, t: 0, w, wall: run.wall, ...(nb?.ov?.NSTD_H ? { ov: { STD_YN: 'true', NSTD_H: nb.ov.NSTD_H } } : {}) });
@@ -1016,6 +1062,8 @@ function planOne(d: Design, cat: KitchenCatalog, series: Series, v: Variant, use
     if (corners.some(([x, z]) => x < -1 || z < -1 || x > room.w + 1 || z > room.d + 1)) warnings.push('아일랜드가 방 밖으로 나갑니다');
   }
 
+  // 30 미만 휠라 — 끝맞춤 몇 mm · 고정 장 사이 좁은 틈이 남긴 것. 옆 장을 줄여 30 으로, 안 되면 빼고 옆 장이 받는다(원본 휠라 모델이 30 미만이면 깨진다)
+  widenThinFills(items, rangeOf, (x) => x.tag !== 'ep' && !/^corner|^wallCorner|^fridgeTop/.test(x.key));
   // 코너장 L — 원본 틀 폭은 W + 100 이고 몸통이 오른쪽(100 ~ W+100)에 있다(코너 쪽 100 은 빈 틈). R 은 몸통이 왼쪽(0 ~ W).
   // 자리 계산은 틀 시작 기준이므로 L 은 장 자리(t)를 몸통 시작으로 100 옮긴다 — 걸레받이 · 찬넬 · 고르기 상자가 몸통에 맞게
   for (const it of items) if (it.key === 'cornerL') it.t += 100;

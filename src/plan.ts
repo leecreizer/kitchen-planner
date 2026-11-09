@@ -40,6 +40,8 @@ export interface Opening {
   depth?: number;
   /** 입구 문 — 여닫이(기본) · 미닫이 · 폴딩. 다용도실 · 서브주방 */
   door?: 'swing' | 'sliding' | 'folding';
+  /** 추가 영역 — 개구부 왼쪽(t 줄어드는 쪽) · 오른쪽으로 장을 두지 않을 폭(mm). 문 자리와 같이 장 배치에서 뺀다(사용자 지시 2026-11-06) */
+  padL?: number; padR?: number;
 }
 
 export const OPENING_INFO: Record<OpeningKind, { label: string; w: number; h: number; sill: number; depth?: number; minW: number; maxW: number; color: string }> = {
@@ -190,6 +192,8 @@ export function clampOpening(o: Opening, r: Room) {
   o.t = Math.max(50, Math.min(L - 50 - o.w, o.t));
   o.h = Math.max(300, Math.min(r.h - (o.kind === 'window' ? 50 : 0), o.h));
   if (o.kind === 'window') o.sill = Math.max(0, Math.min(r.h - o.h - 50, o.sill));
+  // 추가 영역 — 0 ~ 벽 끝까지
+  for (const k of ['padL', 'padR'] as const) { const v = Math.round(Number(o[k]) || 0); if (v > 0) o[k] = Math.min(v, k === 'padL' ? o.t : L - o.t - o.w); else delete o[k]; }
 }
 
 export const LIVING_DEFAULT = { depth: 4000, a: 1500, b: 1500 };

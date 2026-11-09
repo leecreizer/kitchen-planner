@@ -1,5 +1,5 @@
 // 부엌 셀프 설계 — 단계 패널 · 자동 배치 · 3D · 평면도를 잇는다
-import { applyNonStandard, autoPlan, upperBottomOf, FRIDGE_SPEC, fridgeSpec, STYLE_LABEL, widthsOf, type Candidate, type Frame, type Item } from './autoplan';
+import { applyNonStandard, autoPlan, upperBottomOf, FRIDGE_SPEC, fridgeSpec, STYLE_LABEL, widthsOf, wallBlocks, BASE_D, WALL_D, CORNER_D, type Candidate, type Frame, type Item } from './autoplan';
 import { buildKitchen, buildSplashes, setDoors, type KitchenObj } from './kitchen3d';
 import { doorBroken, doorGaps, loadCatalog, texUrl, usableDoors, type DoorDef, type GradeDef, type KitchenCatalog, type ModuleDef } from './kjlLib';
 import { DINING_SETS, DINING_SHAPES, buildDining, diningOf, diningPlace } from './dining3d';
@@ -14,7 +14,7 @@ import { CEILING_LIGHTS, OUTDOOR, QUALITY_TIERS, Stage, type CeilingLight, type 
 import { POST_DEFAULTS, type PostSettings } from './render/raster';
 import * as THREE from 'three';
 import { applyPrompt } from './prompt';
-import { byPriority, nudge, rowGroup, slotGroup, slotLayout, slotMovable } from './reorder';
+import { byPriority, FILL_MAX, FILL_MIN, nudge, rowGroup, slotGroup, slotLayout, slotMovable, widenThinFills } from './reorder';
 import { decode, encode, fromFile, History, toFile, type Snapshot } from './project';
 import { bomCsv, bomGaps, buildBom } from './bom';
 import { AI_MODELS, aiDesign, aiStatus, type AiProvider } from './ai';
@@ -527,6 +527,7 @@ function dragItem(it: Item, p: [number, number], p0: [number, number], done: boo
   }
   slot = null;
   for (const x of s.group) x.t = ts.get(x)!;
+  followFridgeTop(current, s.t0s);
   const movedItems = s.group.filter((x) => x.t !== s.t0s.get(x));
   if (!movedItems.length) {
     // 순서는 그대로 — 끈 만큼 미리 단위로 옮긴다(옆 휠라 · 장 크기가 바뀜)
@@ -557,9 +558,18 @@ function dragItem(it: Item, p: [number, number], p0: [number, number], done: boo
 /** 미리 단위로 옮기기 — 같은 줄 휠라가 먼저, 넘치면 가까운 장부터 100 단위로 크기 조절. 쿡탑이면 위 후드장 줄도 같이 */
 const baseRowPick = (x: Item) => slotMovable(x);
 const upperRowPick = (x: Item) => x.level === 'wall' && x.tag !== 'ep' && !x.key.startsWith('wallCorner') && x.key !== 'fridgeTop';
+/** 냉장고를 옮겼으면 위 냉장고 윗장도 같은 자리로 — 윗장은 상부 줄에 냉장고와 같은 위치 · 폭으로 따로 놓인다 */
+function followFridgeTop(c: Candidate, t0s: Map<Item, number>) {
+  for (const [f, t0] of t0s) {
+    if (f.key !== 'fridge' || f.t === t0) continue;
+    const top = c.items.find((x) => x.key === 'fridgeTop' && x.wall === f.wall && Math.abs(x.t - t0) < 1);
+    if (top) top.t = f.t;
+  }
+}
 function nudgeItem(it: Item, delta: number): string | null {
   if (!current) return '배치안이 없습니다';
   const cand = current;
+  const fr0 = new Map(cand.items.filter((x) => x.key === 'fridge').map((x) => [x, x.t] as [Item, number]));
   const mk = (ref: Item) => (w: number): Item => ({ key: ref.level === 'wall' ? 'wfill50' : 'bfill50', level: ref.level, frame: ref.frame, t: 0, w, wall: ref.wall });
   // 끝까지 못 가면 갈 수 있는 데까지 (10 단위로 줄여 가며)
   const grp = rowGroup(cand.items, it, baseRowPick), want = delta;
@@ -590,6 +600,7 @@ function nudgeItem(it: Item, delta: number): string | null {
     for (const [x, w] of pl.w) setWidth(x, w);
     for (const [x, t] of pl.t) x.t = t;
   }
+  followFridgeTop(cand, fr0);
   // 싱크 · 식세 · 쿡탑 자리 기억
   const fix = { ...(d.fix ?? {}) };
   for (const x of rowGroup(cand.items, it, baseRowPick)) if (isFix(x)) fix[x.tag] = { wall: x.wall!, c: x.t + x.w / 2 };
@@ -671,6 +682,8 @@ function pickOpening(id: string | null) {
     <div class="ii-row">${o.kind === 'window' ? num('h', '높이', o.h) : o.depth ? num('depth', '깊이', o.depth, 50) : num('h', '높이', o.h)}</div>
     ${o.kind === 'window' ? `<div class="ii-row">${num('sill', '창대 높이 (바닥에서)', o.sill)}<label>&nbsp;<span class="ii-hint">${o.sill >= 930 ? '상판 위 창' : '상판보다 낮음 — 장 뒤가 막힘'}</span></label></div>` : ''}
     ${o.kind === 'utility' || o.kind === 'subkitchen' ? `<div class="ii-label">입구 문</div><div class="ii-seg">${([['swing', '여닫이'], ['sliding', '미닫이'], ['folding', '폴딩']] as const).map(([k, n]) => `<button data-door="${k}" class="${(o.door ?? 'swing') === k ? 'on' : ''}">${n}</button>`).join('')}</div>` : ''}
+    <div class="ii-label">추가 영역 <small>${o.kind === 'window' ? '창' : '입구'} 옆으로 장을 두지 않을 폭 — 문 자리와 같이 장 배치에서 뺀다</small></div>
+    <div class="ii-row">${num('padL', '왼쪽 폭', o.padL ?? 0, 50)}${num('padR', '오른쪽 폭', o.padR ?? 0, 50)}</div>
     <div class="ii-acts"><button data-act="del">${o.kind === 'window' ? '이 창 빼기' : `${i.label} 빼기`}</button></div>`;
   box.dataset.op = o.id;
   box.hidden = false;
@@ -1128,7 +1141,7 @@ function renderAppliances() {
     const cur = applianceOf(cat, d.appliance?.[cat as keyof NonNullable<Design['appliance']>]);
     const note = cur ? [sz(cur.size) && `규격 ${sz(cur.size)}`, cur.cut && cur.cut[0] ? `상판 재단 ${sz(cur.cut)}` : '', cur.type ?? ''].filter(Boolean).join(' · ') : '';
     return `<label class="app"><span>${label}</span><select data-app="${cat}">${cur ? '' : '<option value="">고르지 않음</option>'}${list.map((a) => `<option value="${a.model}"${a === cur ? ' selected' : ''}>${a.name}${a.badge ? ` [${a.badge}]` : ''}${sz(a.size) ? ` · ${sz(a.size)}` : ''}</option>`).join('')}</select><small>${note}</small></label>`;
-  }).join('') + '<div class="sw-miss">쿡탑 · 싱크볼은 고른 규격으로 3D 크기를, 빌트인 후드는 폭을 맞춥니다. 수전 · 식기세척기 · 오븐은 목록 기록만(모델 형상은 그대로)</div>';
+  }).join('') + '<div class="sw-miss">쿡탑 · 싱크볼은 고른 규격으로 3D 크기를, 빌트인 후드는 폭을 맞춥니다. 오븐은 같은 브랜드 · 높이의 빌트인 오븐 모델로 보여 줍니다(밀레 · 삼성, 그 밖은 로고 없는 모델). 수전 · 식기세척기는 목록 기록만(모델 형상은 그대로)</div>';
 }
 $('#appliances').addEventListener('change', (e) => {
   const s = e.target as HTMLSelectElement;
@@ -1239,7 +1252,7 @@ $<HTMLInputElement>('#prompt').addEventListener('keydown', (e) => { if (e.key ==
 /* ───────── 장 고르기 — 이름 · 사이즈 · 폭 바꾸기 ───────── */
 const NAMES: Record<string, string> = { fridge: '냉장고장 (비스포크 1도어 2대)', fixFill: 'FIX 판 (끝 조각)' };
 const modOf = (it: Item) => cat.modules.find((m) => m.key === it.key && (m.series === grade().series || m.series === '*')) ?? cat.modules.find((m) => m.key === it.key);
-/** 폭 선택지 — 원본 W 변수. 휠라는 10~50, 폭을 바꾸면 안 되는 것(EP · 냉장고 · FIX)은 없음. 코너장 · 상부 코너장은 원본 규격 폭(900 · 1000 / 700 · 750) */
+/** 폭 선택지 — 원본 W 변수. 휠라는 50 · 75 · 100 · 150, 폭을 바꾸면 안 되는 것(EP · 냉장고 · FIX)은 없음. 코너장 · 상부 코너장은 원본 규격 폭(900 · 1000 / 700 · 750) */
 const fixedW = (it: Item) => it.tag === 'ep' || it.tag === 'fix' || it.tag === 'fridge' || it.key === 'fridgeTop' || it.key === 'pantryCorner' || it.level === 'shelf';
 function widthOptions(it: Item): number[] {
   if (fixedW(it)) return [];
@@ -1250,7 +1263,7 @@ function widthOptions(it: Item): number[] {
 function widthRange(it: Item): [number, number] | null {
   if (fixedW(it)) return null;
   const m = modOf(it), o = widthOptions(it);
-  if (/fill/.test(it.key)) return [10, 150];   // 휠라 최소 10
+  if (/fill/.test(it.key)) return [FILL_MIN, FILL_MAX];   // 휠라 30 ~ 150 — 원본 모델이 30 미만이면 깨진다
   let lo = m?.nstd && m.wmin ? m.wmin : Math.min(...o);
   const hi = m?.nstd && m.wmax ? m.wmax : Math.max(...o);
   // 쿡탑장은 쿡탑 기기(600)가 들어가는 폭 아래로 줄이지 않는다 — 자동 배치(rangeOf)와 같은 기준. 이미 더 좁으면 그 폭
@@ -1262,6 +1275,15 @@ const inRange = (it: Item, w: number) => { const r = widthRange(it); return !!r 
 function setWidth(it: Item, w: number) {
   it.w = w;
   applyNonStandard([it], (k) => cat.modules.find((m) => m.key === k && (m.series === grade().series || m.series === '*')));
+}
+/** 30 미만 휠라 정리 — 최소가 10 이던 때 저장한 설계 파일 · 자동 저장을 열 때. 가까운 장을 줄여 30 으로, 안 되면 빼고 옆 장이 받는다 */
+function fixThinFills() {
+  if (!current) return;
+  const w0 = new Map(current.items.map((x) => [x, x.w] as const));
+  const n = widenThinFills(current.items, (x) => (x.key === 'hood' ? null : widthRange(x)), (x) => (x.level === 'wall' ? upperRowPick(x) : x.tag !== 'ep' && !x.key.startsWith('corner')));
+  if (!n) return;
+  for (const x of current.items) if (w0.get(x) !== x.w) setWidth(x, x.w);
+  fixPoints(current);
 }
 function pick(it: Item | null) {
   picked = it; plan.picked = it;
@@ -1297,9 +1319,10 @@ function pick(it: Item | null) {
     ${fridgeRow(it)}`;
   box.hidden = false;
   box.querySelector('[data-isl-all]')?.addEventListener('click', () => { pick(null); pickIsland(); });
-  // 장 추가 · 빼기
-  box.querySelectorAll<HTMLElement>('[data-add-side]').forEach((b) => b.addEventListener('click', () => {
-    const r = addBeside(it, b.dataset.addSide as 'L' | 'R');
+  // 장 · 휠라 추가 · 빼기
+  box.querySelectorAll<HTMLElement>('[data-add-side], [data-add-fill]').forEach((b) => b.addEventListener('click', () => {
+    const fill = !!b.dataset.addFill;
+    const r = addBeside(it, (b.dataset.addSide ?? b.dataset.addFill) as 'L' | 'R', fill);
     if (typeof r === 'string') { const n = box.querySelector('.ii-edit-note'); if (n) { n.textContent = r; n.classList.add('err'); } return; }
     void rebuildKitchen(); pick(r);
   }));
@@ -1403,49 +1426,146 @@ function pick(it: Item | null) {
     wl.querySelectorAll<HTMLElement>('[data-w]').forEach((b) => b.addEventListener('mousedown', (e) => { e.preventDefault(); wl.hidden = true; apply(Number(b.dataset.w)); }));
   }
 }
-/** 장 교체 후보 — 같은 층(하부 · 상부 · 키큰)의 일반 장. 싱크 · 후드 · 코너 · EP · 휠라 · 냉장고는 자리 기능이라 교체하지 않는다 */
+/** 장 교체 후보 — 같은 층(하부 · 상부 · 키큰)의 일반 장과 휠라(장 ↔ 휠라, 휠라 50 ↔ 75 — 사용자 지시 2026-11-06).
+ *  싱크 · 쿡탑 · 후드 · 코너 · EP · 냉장고는 자리 기능이라 교체하지 않는다 */
 const SWAP: Record<string, string[]> = {
-  base: ['cook1', 'cook2', 'drawer2', 'drawer3', 'oven', 'dish', 'basket200', 'basket300'],
+  base: ['cook1', 'cook2', 'drawer2', 'drawer3', 'oven', 'dish', 'basket200', 'basket300', 'bfill50', 'bfill75'],
   hob: ['cook1', 'cook2', 'drawer2', 'drawer3', 'cooktop'],
-  wall: ['wall1', 'wall2', 'wallGlass', 'dishDry', 'wallFold'],
+  wall: ['wall1', 'wall2', 'wallGlass', 'dishDry', 'wallFold', 'wfill50'],
   tall: ['tall', 'tall2', 'cafeTall', 'foldTall', 'tallBasket'],
 };
 const swapKeys = (it: Item): string[] => {
-  if (it.tag === 'sink' || it.tag === 'ep' || it.tag === 'fix' || it.tag === 'fridge' || /fill|^corner|^wallCorner|^hood$|fridgeTop|pantry|islandOpen/.test(it.key)) return [];
+  if (it.tag === 'sink' || it.tag === 'ep' || it.tag === 'fix' || it.tag === 'fridge' || /^corner|^wallCorner|^hood$|fridgeTop|pantry|islandOpen|^fixFill/.test(it.key)) return [];
   const list = it.tag === 'hob' ? SWAP.hob : SWAP[it.level] ?? [];
   return list.filter((k) => cat.modules.some((m) => m.key === k && (m.series === grade().series || m.series === '*')));
 };
-const fitsW = (m: ModuleDef | undefined, w: number) => !!m && (widthsOf(m).includes(w) || (!!m.nstd && !!m.wmin && !!m.wmax && w >= m.wmin && w <= m.wmax));
+// 휠라는 30 ~ 150 이면 그 폭 그대로(앱 규칙 — 원본 범위 50 아래도 쓴다. 최소 30 은 사용자 2026-11-09, 예전 10)
+const fitsW = (m: ModuleDef | undefined, w: number) => !!m && (/fill/.test(m.key) ? w >= FILL_MIN && w <= FILL_MAX : widthsOf(m).includes(w) || (!!m.nstd && !!m.wmin && !!m.wmax && w >= m.wmin && w <= m.wmax));
 function swapRow(it: Item): string {
   const keys = swapKeys(it);
   if (!keys.length) return '';
   // 로봇청소기장 — 일반 하부장(폭 450 이상)의 걸레받이 자리를 로봇청소기 대기 공간으로
   const robotOk = it.level === 'base' && it.w >= 450 && !it.tag?.match(/sink|dish|hob/);
   const modK = (k: string) => cat.modules.find((m) => m.key === k && (m.series === grade().series || m.series === '*'));
-  return `<div class="ii-label">장 교체 <small>같은 자리에 들어갈 원본 장</small></div>
+  return `<div class="ii-label">장 · 휠라 교체 <small>같은 자리에 들어갈 원본 장 · 휠라(폭 ${FILL_MIN}~${FILL_MAX})</small></div>
     <div class="ii-swap">${keys.map((k) => { const m = modK(k); const fit = fitsW(m, it.w); return `<button data-swap="${k}" class="${k === it.key ? 'on' : ''}" title="${m?.name ?? k}${fit ? '' : ` · 폭 ${it.w} 이 규격에 없어 가까운 폭으로`}">${m?.label ?? k}${fit ? '' : ' <small>폭 맞춤</small>'}</button>`; }).join('')}</div>
     ${robotOk ? `<div class="ii-swap"><button data-robot class="${it.robot ? 'on' : ''}" title="걸레받이 자리(높이 112)를 비우고 로봇청소기 · 충전대">로봇청소기장${it.robot ? ' ✓' : ''}</button>${it.robot ? `<button data-robot-run>${robotRun ? '■ 청소 멈춤' : '▶ 청소 시작'}</button>` : ''}</div>` : ''}
     <div class="ii-note ii-swap-note">바꾼 장은 자동 배치를 다시 하면 지워집니다</div>`;
 }
 /* ───────── 장 추가 · 빼기 — 같은 줄 안에서. 추가하면 옆 장들이 줄고(휠라 먼저), 빼면 늘어난다(휠라 마지막). 자동 배치를 다시 하면 지워짐 ───────── */
-/** 자리 기능이 있는 장 — 추가 기준 · 빼기 대상에서 뺀다 */
-const fixedSlot = (it: Item) => it.tag === 'ep' || it.tag === 'fix' || it.tag === 'fridge' || /^corner|^wallCorner|fridgeTop|pantry|^fixFill/.test(it.key) || it.level === 'shelf' || it.level === 'tall';
+/** 추가 · 빼기를 쓰지 않는 것 — EP · FIX 도어 · 선반 (키큰장 · 냉장고장 옆에도 추가할 수 있다, 사용자 지시 2026-11-06 「모든 장이 가능」) */
+const fixedSlot = (it: Item) => it.tag === 'ep' || it.tag === 'fix' || /^fixFill/.test(it.key) || it.level === 'shelf';
+/** 뺄 수 없는 것 — 자리 기능(코너 · 냉장고 · 냉장고 윗장 · 팬트리 · 후드). 냉장고는 「냉장고장」 켜고 끄기로 */
+const fixedRemove = (it: Item) => it.tag === 'fridge' || /^corner|^wallCorner|fridgeTop|pantry|^hood$/.test(it.key);
+/** 층마다 추가할 장 — [1도어 키, 2도어 키, 기본 폭] */
+const ADD_KEYS: Record<string, [string, string, number]> = { base: ['cook1', 'cook2', 450], wall: ['wall1', 'wall2', 400], tall: ['tall', 'tall2', 600] };
 function editRow(it: Item): string {
   if (fixedSlot(it)) return '';
-  return `<div class="ii-label">장 추가 · 빼기 <small>같은 줄 안에서 — 옆 장 폭이 바뀝니다</small></div>
-    <div class="ii-swap"><button data-add-side="L">◀ 왼쪽에 장 추가</button><button data-add-side="R">오른쪽에 장 추가 ▶</button><button data-remove>이 장 빼기</button></div>
-    <div class="ii-note ii-edit-note">추가하면 ${it.level === 'wall' ? '상부장 1도어 400' : '조리장 1도어 450'} — 고른 뒤 장 교체 · 폭으로 바꿀 수 있습니다</div>`;
+  const lv = it.level === 'wall' ? '상부장 1도어 400' : it.level === 'tall' ? '키큰장 600' : '조리장 1도어 450';
+  const fillOk = it.level === 'base' || it.level === 'wall';
+  return `<div class="ii-label">장 · 휠라 추가 · 빼기 <small>옆에 빈 공간이 있으면 그 자리에, 없으면 옆 장 폭이 바뀝니다</small></div>
+    <div class="ii-swap"><button data-add-side="L">◀ 왼쪽에 장 추가</button><button data-add-side="R">오른쪽에 장 추가 ▶</button></div>
+    <div class="ii-swap">${fillOk ? '<button data-add-fill="L">◀ 왼쪽에 휠라 추가</button><button data-add-fill="R">오른쪽에 휠라 추가 ▶</button>' : ''}${fixedRemove(it) ? '' : `<button data-remove>이 ${/fill/.test(it.key) ? '휠라' : '장'} 빼기</button>`}</div>
+    <div class="ii-note ii-edit-note">추가하면 장은 ${lv}(빈 칸이면 그 폭에 맞춰 메움), 휠라는 50 — 고른 뒤 교체 · 폭(휠라 ${FILL_MIN}~${FILL_MAX})으로 바꿀 수 있습니다</div>`;
 }
-/** 옆에 새 장 — 폭 0 으로 끼운 뒤 원하는 폭으로 늘린다(같은 줄 장들이 그만큼 줄어든다). 실패하면 이유 문자열 */
-function addBeside(it: Item, side: 'L' | 'R'): Item | string {
+/** 옆 빈 공간 — it 의 side 쪽, 같은 벽에서 그 층 높이를 차지하는 것이 없는 구간(문 · 창 · 옆 벽 코너 장 깊이 제외).
+ *  바로 옆 EP 와 빈 칸 건너 맞은편 EP(빈 자리로 둔 칸을 막던 것)는 치울 수 있는 것으로 본다. 아일랜드는 길이가 정해져 있어 없음.
+ *  장 배치 길이(runLen)로 줄을 짧게 잡았어도 벽에 공간이 있으면 쓴다(사용자 지시 2026-11-06) */
+function freeBeside(it: Item, side: 'L' | 'R'): { t0: number; t1: number; eps: Item[]; to: Item | null; closed: boolean } | null {
+  if (!current || it.wall == null) return null;
+  const w = it.wall, L = wallLength(d.room, w), lv = it.level;
+  const zone = (x: Item) => (lv === 'tall' ? x.level === 'base' || x.level === 'wall' || x.level === 'tall' : x.level === lv || x.level === 'tall');
+  const row = current.items.filter((x) => x !== it && x.wall === w && zone(x)).sort((a, b) => a.t - b.t);
+  const blk = wallBlocks(d.openings, w);
+  // 끝을 막는 것 — closed = 그 끝에 닿는 장은 EP 가 필요 없음(벽 · 날개벽 · 옆 벽 코너 장), 문 · 창은 드러난 끝(EP)
+  const stops: { a: number; b: number; closed: boolean }[] = (lv === 'base' ? blk.base : lv === 'wall' ? blk.upper : [...blk.base, ...blk.upper]).map(([a, b]) => ({ a, b, closed: false }));
+  // 벽 끝 — 트인 쪽(거실)이면 날개벽이 있을 때만 막힘
+  stops.push({ a: -1e9, b: 0, closed: prevWall(w) !== d.openWall || d.wing.b >= 300 }, { a: L, b: 1e9, closed: nextWall(w) !== d.openWall || d.wing.a >= 300 });
+  // 옆 벽 줄이 코너를 차지 — 앞 벽의 끝 · 다음 벽의 시작에 장이 있으면 그 깊이만큼(그 장 옆면에 붙는다)
+  const depthOf = (x: Item) => (x.level === 'wall' ? WALL_D : x.key.startsWith('corner') ? CORNER_D : x.level === 'tall' ? 720 : BASE_D);
+  for (const [ow, atStart] of [[prevWall(w), true], [nextWall(w), false]] as const) {
+    const OL = wallLength(d.room, ow);
+    const near = current.items.filter((x) => x.wall === ow && zone(x) && (atStart ? x.t + x.w >= OL - 1 : x.t <= 1));
+    if (near.length) { const dep = Math.max(...near.map(depthOf)); stops.push(atStart ? { a: -1e9, b: dep, closed: true } : { a: L - dep, b: 1e9, closed: true }); }
+  }
+  const sameEp = (x: Item) => x.tag === 'ep' && (x.level === lv || (lv === 'tall' && x.level !== 'wall'));
+  if (side === 'R') {
+    const c = it.t + it.w, eps: Item[] = [];
+    const ep = row.find((x) => sameEp(x) && Math.abs(x.t - c) < 1);
+    if (ep) eps.push(ep);
+    const rest = row.filter((x) => !eps.includes(x) && x.t + x.w > c + 0.5);
+    const hit = stops.filter((s) => s.b > c + 0.5).map((s) => ({ at: Math.max(s.a, c), closed: s.closed })).sort((p, q) => p.at - q.at)[0];
+    const nxt = rest[0];
+    let end = Math.min(hit.at, nxt ? nxt.t : Infinity);
+    if (end - c < 1) return null;
+    // 빈 칸 건너 맞은편 EP — 그 너머 장에 붙어 있으면 치우고 그 장까지 잇는다
+    let to: Item | null = nxt && Math.abs(nxt.t - end) < 1 ? nxt : null;
+    if (to && sameEp(to)) { const after = rest.find((x) => x !== to && Math.abs(x.t - (to!.t + to!.w)) < 1); if (after) { eps.push(to); end = after.t; to = after; } else to = null; }
+    return { t0: c, t1: end, eps, to, closed: !to && Math.abs(end - hit.at) < 1 && hit.closed };
+  }
+  const c = it.t, eps: Item[] = [];
+  const ep = row.find((x) => sameEp(x) && Math.abs(x.t + x.w - c) < 1);
+  if (ep) eps.push(ep);
+  const rest = row.filter((x) => !eps.includes(x) && x.t < c - 0.5);
+  const hit = stops.filter((s) => s.a < c - 0.5).map((s) => ({ at: Math.min(s.b, c), closed: s.closed })).sort((p, q) => q.at - p.at)[0];
+  const prv = rest.sort((p, q) => (q.t + q.w) - (p.t + p.w))[0];
+  let start = Math.max(hit.at, prv ? prv.t + prv.w : -Infinity);
+  if (c - start < 1) return null;
+  let to: Item | null = prv && Math.abs(prv.t + prv.w - start) < 1 ? prv : null;
+  if (to && sameEp(to)) { const before = rest.find((x) => x !== to && Math.abs(x.t + x.w - to!.t) < 1); if (before) { eps.push(to); start = before.t + before.w; to = before; } else to = null; }
+  return { t0: start, t1: c, eps, to, closed: !to && Math.abs(start - hit.at) < 1 && hit.closed };
+}
+/** 옆에 새 장 · 휠라. 장은 옆 빈 공간이 있으면 그 자리에(옆 장을 줄이지 않는다) — 빈 칸이면 그 폭에 맞춰 메워 양쪽을 잇는다.
+ *  빈 공간이 없으면 폭 0 으로 끼운 뒤 원하는 폭으로 늘린다(같은 줄 장들이 그만큼 줄어든다). 실패하면 이유 문자열 */
+function addBeside(it: Item, side: 'L' | 'R', fill = false): Item | string {
   if (!current) return '배치안이 없습니다';
-  const key = it.level === 'wall' ? 'wall1' : 'cook1', w = it.level === 'wall' ? 400 : 450;
-  if (!cat.modules.some((m) => m.key === key && (m.series === grade().series || m.series === '*'))) return '이 그레이드에 넣을 장이 없습니다';
+  const up = it.level === 'wall';
+  const has = (k: string) => cat.modules.some((m) => m.key === k && (m.series === grade().series || m.series === '*'));
+  const [k1, k2, w0] = ADD_KEYS[it.level] ?? ADD_KEYS.base;
+  if (!fill) {
+    const fr = freeBeside(it, side);
+    const range = (k: string) => { const m = cat.modules.find((x) => x.key === k && (x.series === grade().series || x.series === '*')); return m ? (widthRange({ key: k, level: it.level, frame: it.frame, t: 0, w: 0 }) ?? null) : null; };
+    const r1 = range(k1), r2 = has(k2) ? range(k2) : null;
+    if (fr && r1) {
+      const room = fr.t1 - fr.t0;
+      // 빈 칸을 다 메우면 양쪽이 이어진다(EP 를 치운다) — 한 장으로 메울 수 있는 폭까지. 아니면 기본 폭(남는 쪽 끝엔 EP)
+      const maxW = Math.max(r1[1], r2?.[1] ?? 0);
+      const fits = room <= maxW && room >= r1[0];
+      // 빈 칸이면 양쪽 장을 잇고, 막힌 끝(벽 · 날개벽 · 옆 벽 코너 장)까지면 거기 붙인다 — 둘 다 끝 EP 가 필요 없다
+      const fills = !!fr.to && fits, toEnd = !fr.to && fr.closed && fits;
+      const needEp = !fills && !toEnd;
+      const want = fills || toEnd ? room : Math.min(w0, room - 20, maxW);
+      if (want >= r1[0]) {
+        const key = want <= r1[1] ? k1 : k2;
+        const t = side === 'R' ? fr.t0 : fr.t1 - want;
+        const nt: Item = { key, level: it.level, frame: it.frame, t, w: want, wall: it.wall };
+        current.items = current.items.filter((x) => !fr.eps.includes(x));
+        current.items.push(nt);
+        setWidth(nt, want);
+        // 끝이 드러나면 EP — 원래 그 끝을 막던 EP 를 새 장 끝으로
+        if (!fills && needEp) {
+          const epKey = it.level === 'wall' ? 'epW' : it.level === 'tall' ? 'epT' : 'epB';
+          const ref = fr.eps[0] ?? current.items.find((x) => x.key === epKey && x.ov);
+          const ov = ref?.ov ? { ...ref.ov } : undefined;
+          current.items.push({ key: ref?.key ?? epKey, level: ref?.level ?? it.level, frame: it.frame, t: side === 'R' ? t + want : t - 20, w: 20, wall: it.wall, tag: 'ep', ...(ov ? { ov } : {}) });
+        }
+        fixPoints(current);
+        return nt;
+      }
+    }
+  }
+  const key = fill ? (up ? 'wfill50' : 'bfill50') : k1, w = fill ? 50 : w0;
+  if (!has(key)) return `이 그레이드에 넣을 ${fill ? '휠라가' : '장이'} 없습니다`;
   // 줄 정렬에서 기준 장의 바로 왼쪽 · 오른쪽에 오도록 t 를 아주 조금 비켜 끼운다(다시 이을 때 정수로 맞춰진다)
   const nt: Item = { key, level: it.level, frame: it.frame, t: side === 'L' ? it.t - 0.001 : it.t + it.w - 0.001, w: 0, wall: it.wall };
   current.items.push(nt);
   const err = resizeItem(nt, w);
-  if (err) { current.items = current.items.filter((x) => x !== nt); return `넣을 자리가 없습니다 — ${err}`; }
+  if (err) {
+    current.items = current.items.filter((x) => x !== nt);
+    // 키큰장 · 냉장고 줄은 하부 · 상부장을 줄여 자리를 만들지 않는다 — 옆이 하부장이면 그 장을 빼 빈 자리로 두고 추가하면 그 칸에 들어간다
+    if (it.level === 'tall') return '옆에 빈 공간이 없습니다 — 키큰장 · 냉장고 옆은 바닥부터 천장까지 빈 벽에만 추가됩니다(옆 하부장 · 그 위 상부장을 빼면 그 자리에)';
+    return `넣을 자리가 없습니다 — ${err}`;
+  }
   return nt;
 }
 /** 빼기 — join: 옆 장들이 그 폭만큼 늘어난다(다 못 받으면 빈 자리) · leave: 그 자리를 비우고 옆 장의 드러난 끝에 EP */
@@ -1456,8 +1576,9 @@ function removeItem(it: Item, mode: 'join' | 'leave' = 'join'): string {
   current.items = current.items.filter((x) => x !== it);
   if (err) gapEps(current, it, t0, w0);
   fixPoints(current);
-  if (mode === 'leave') return `장을 뺐습니다 — ${w0}mm 를 빈 자리로 두고 옆 장 끝에 EP 를 댔습니다`;
-  return err ? `장을 뺐습니다 — 옆 장이 다 받지 못해 ${w0}mm 를 빈 자리로 남기고 옆 장 끝에 EP 를 댔습니다` : '장을 뺐습니다 — 옆 장이 그 폭만큼 늘었습니다';
+  // 빈 자리 — 옆 장을 고르고 그 쪽으로 「장 추가」하면 그 칸 폭에 맞춰 메우고 양쪽 EP 를 치운다(사용자 지시 2026-11-06)
+  if (mode === 'leave') return `장을 뺐습니다 — ${w0}mm 를 빈 자리로 두고 옆 장 끝에 EP 를 댔습니다 · 다시 이으려면 옆 장을 고르고 그 쪽으로 「장 추가」`;
+  return err ? `장을 뺐습니다 — 옆 장이 다 받지 못해 ${w0}mm 를 빈 자리로 남기고 옆 장 끝에 EP 를 댔습니다 · 다시 이으려면 옆 장을 고르고 그 쪽으로 「장 추가」` : '장을 뺐습니다 — 옆 장이 그 폭만큼 늘었습니다';
 }
 /** 빈 자리 양옆 — 옆에 장이 닿아 있으면(EP · 벽이 아니면) 빈 자리 안쪽에 EP 20. 상부장 EP 는 같은 줄 EP 의 비규격 값을 따른다 */
 function gapEps(c: Candidate, it: Item, t0: number, w0: number) {
@@ -1475,14 +1596,16 @@ function swapItem(it: Item, key: string): string | null {
   if (key === it.key) return null;
   const nm = cat.modules.find((m) => m.key === key && (m.series === grade().series || m.series === '*'));
   if (!nm) return '이 그레이드에는 없는 장입니다';
-  const old = { key: it.key, tag: it.tag, ov: it.ov };
+  const old = { key: it.key, tag: it.tag, ov: it.ov, robot: it.robot };
   it.key = key; delete it.ov;
   if (key === 'dish') it.tag = 'dish'; else if (old.tag === 'dish') delete it.tag;
+  if (/fill/.test(key)) delete it.robot;     // 휠라엔 로봇청소기 자리가 없다
   if (fitsW(nm, it.w)) { setWidth(it, it.w); return null; }
-  const ws = widthsOf(nm);
+  // 장 → 휠라는 휠라 최대 폭(150)으로 — 남는 폭은 옆 장이 받는다
+  const ws = /fill/.test(key) ? [Math.max(FILL_MIN, Math.min(FILL_MAX, it.w))] : widthsOf(nm);
   const target = ws.reduce((a, b) => (Math.abs(b - it.w) < Math.abs(a - it.w) ? b : a), ws[0]);
   const err = target ? resizeItem(it, target) : '규격 폭이 없습니다';
-  if (err) { it.key = old.key; it.tag = old.tag; it.ov = old.ov; return err; }
+  if (err) { it.key = old.key; it.tag = old.tag; it.ov = old.ov; if (old.robot) it.robot = old.robot; return err; }
   return null;
 }
 /** 폭 바꾸기 — 같은 줄에 붙어 있는 장 중 가까운 것(휠라 먼저)이 차이를 흡수, 줄 위치를 다시 잇는다 */
@@ -1504,8 +1627,8 @@ function resizeItem(it: Item, w: number): string | null {
   for (const x of byPriority(near, rem > 0)) {
     if (!rem) break;
     const fill = /fill/.test(x.key);
-    // 휠라는 10 ~ 150 — 줄일 때 10 까지만, 그 아래는 다음 장들이 받는다(빼지 않는다, 사용자 2026-11-05)
-    const r: [number, number] | null = fill ? [Math.min(10, x.w), 150] : widthRange(x);
+    // 휠라는 30 ~ 150 — 줄일 때 30 까지만, 그 아래는 다음 장들이 받는다(빼지 않는다, 사용자 2026-11-05 · 최소 30 은 2026-11-09)
+    const r: [number, number] | null = fill ? [Math.min(FILL_MIN, x.w), FILL_MAX] : widthRange(x);
     if (!r) continue;
     const nw = Math.max(r[0], Math.min(r[1], x.w + rem));
     if (nw !== x.w) { plan.set(x, nw); rem -= nw - x.w; }
@@ -1516,7 +1639,7 @@ function resizeItem(it: Item, w: number): string | null {
     const wl = it.wall, L = wl != null ? wallLength(d.room, wl) : 0;
     const atS = wl != null && group[0].t <= 1 && (prevWall(wl) !== d.openWall || d.wing.b >= 600);
     const atE = wl != null && group[group.length - 1].t + group[group.length - 1].w >= L - 1 && (nextWall(wl) !== d.openWall || d.wing.a >= 600);
-    if ((atS || atE) && rem >= 10 && rem <= 150) {
+    if ((atS || atE) && rem >= FILL_MIN && rem <= FILL_MAX) {
       add = { key: it.level === 'wall' ? 'wfill50' : 'bfill50', level: it.level, frame: it.frame, t: 0, w: rem, wall: it.wall };
       (add as Item & { _atStart?: boolean })._atStart = atS && !atE;
       rem = 0;
@@ -1951,6 +2074,11 @@ const POST_CTLS: PostCtl[] = [
   { kind: 'check', key: 'ssr', label: '화면 반사 (SSR)' },
   { kind: 'range', key: 'ssrIntensity', label: '반사 세기', min: 0, max: 2, step: 0.05 },
   { kind: 'check', key: 'sss', label: '접촉 그림자 (SSS · 햇빛)' },
+  { kind: 'grp', label: '바닥 반사', note: '바닥에 방이 거울처럼 비친다 — 비스듬히 볼수록 진하게. 0 이면 끔(방을 한 번 더 그려 무겁다)' },
+  { kind: 'range', key: 'floorRefl', label: '세기', min: 0, max: 3, step: 0.05 },
+  { kind: 'range', key: 'floorBlur', label: '흐림', min: 0, max: 1, step: 0.05 },
+  { kind: 'grp', label: '상판 반사', note: '상판 윗면에 방이 비친다 — 종류마다 다르게(마블이 가장 또렷 · 콘크리트 · 스테인리스는 흐림). 이 값은 배율, 0 이면 끔' },
+  { kind: 'range', key: 'counterRefl', label: '배율', min: 0, max: 3, step: 0.05 },
   { kind: 'grp', label: '블룸', note: '밝은 곳 빛 번짐' },
   { kind: 'check', key: 'bloom', label: '켜기' },
   { kind: 'range', key: 'bloomStrength', label: '세기', min: 0, max: 2, step: 0.05 },
@@ -2019,6 +2147,18 @@ renderPop.querySelectorAll<HTMLElement>('[data-mode]').forEach((b) => b.addEvent
   await stage.setMode(mode);
 }));
 stage.onStatus = (t) => { $('#samples').textContent = t; };
+// 실사 메뉴 표시 — 지금 실제 방식으로(사용자 지시 2026-11-06 「렌더링모드 표시가 기본모드가 아닌데 계속 기본모드로 표시」).
+// 메뉴는 누를 때만 바뀌어서, 저장된 후처리 · 후처리 메뉴 · 성능 단계로 SSR · SSS 가 켜져 있어도 「실시간 (기본)」으로 보였다.
+// 실시간에서 SSR · SSS 가 켜져 있으면 ④ 고품질로 본다
+const shownMode = (): RenderMode => (stage.mode !== 'raster' ? stage.mode : stage.raster.post.ssr || stage.raster.post.sss ? 'hq' : 'raster');
+const syncRenderMenu = () => {
+  const m = shownMode();
+  renderPop.querySelectorAll<HTMLElement>('[data-mode]').forEach((x) => x.classList.toggle('on', x.dataset.mode === m));
+  setMenuOn($('#t-path'), m !== 'raster');
+  $('#samples').hidden = m === 'raster' || m === 'hq';
+};
+stage.onModeChange = syncRenderMenu;
+syncRenderMenu();
 // 굽기 · 서펠 결과를 다시 쓸 열쇠 — 설계 · 배치안 · 문 열림
 stage.stateKey = () => JSON.stringify([d, current?.id, current?.items.length, doorsTo]);
 // 성능 — PC 사양에 맞춘 화질 단계(사용자 지시 2026-11-06). 자동은 그래픽 카드를 보고 고르고, 3D 를 돌릴 때 버벅이면 한 단계씩 낮춘다.
@@ -2141,6 +2281,7 @@ async function applySnapshot(s: Snapshot, record: boolean) {
   storeDesign(d);
   cands = autoPlan(d, cat, grade().series);
   current = s.plan;
+  fixThinFills();
   if (current) { const i = cands.findIndex((c) => c.id === current!.id); if (i >= 0) cands[i] = current; else cands.unshift(current); }
   refreshPanels();
   rebuildRoom();
@@ -2175,7 +2316,10 @@ async function saveFile() {
     app: `kitchen-planner ${pkg.version}`,
     summary: { 공간: `${d.room.w}×${d.room.d}×${d.room.h}`, 구조: ROOM_NAME[d.layout], 아일랜드: d.island, 스타일: STYLE_LABEL[d.style], 그레이드: grade().label, 장: current?.items.length ?? 0, 배치안: current?.title },
     bom: current ? buildBom(d, current, cat, grade()) : [],
-    settings: { light: { sun: stage.sunCfg, room: stage.roomCfg, shadow: stage.shadowCfg }, post: stage.raster.post, mode: stage.mode },
+    // 그때 화면을 그대로 재현할 수 있게 — 카메라(m) · 창밖 풍경 · 성능 단계 · 화면 크기도 같이(참고용, 불러올 땐 적용하지 않음)
+    settings: { light: { sun: stage.sunCfg, room: stage.roomCfg, shadow: stage.shadowCfg }, post: stage.raster.post, mode: stage.mode,
+      camera: { pos: stage.camera.position.toArray().map((v) => +v.toFixed(3)), target: stage.controls.target.toArray().map((v) => +v.toFixed(3)), fov: stage.camera.fov },
+      outdoor, quality: stage.quality, perf: perfCfg, view: { w: innerWidth, h: innerHeight, dpr: devicePixelRatio } },
   });
   const name = `부엌설계_${stamp()}.kitchen.json`;
   // 저장 위치를 고를 수 있으면(크롬 · 엣지) 고르게, 아니면 내려받기 폴더로
@@ -2241,6 +2385,7 @@ try {
     const s = decode(raw);
     if (s.plan && JSON.stringify(s.design) === JSON.stringify(d)) {
       current = s.plan;
+      fixThinFills();
       const i = cands.findIndex((c) => c.id === current!.id); if (i >= 0) cands[i] = current; else cands.unshift(current);
       renderCands(); renderRunLen(); plan.render(d, current);
     }

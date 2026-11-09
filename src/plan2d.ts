@@ -326,6 +326,12 @@ export class PlanView {
     const d = this.d!, svg = this.root ?? this.svg, f = wallFrame(d.room, o.wall);
     const P = (t: number, u: number) => [f.o[0] + f.dir[0] * t + f.n[0] * u, f.o[1] + f.dir[1] * t + f.n[1] * u];
     const g = el('g', { class: `p-op${this.selected === o.id ? ' sel' : ''}`, style: `--c:${OPENING_INFO[o.kind].color}` }, svg);
+    // 추가 영역 — 장을 두지 않는 자리(벽에서 장 깊이 600 까지 빗금)
+    for (const [t0, t1] of [[o.t - (o.padL ?? 0), o.t], [o.t + o.w, o.t + o.w + (o.padR ?? 0)]]) {
+      if (t1 - t0 < 1) continue;
+      const q = [P(t0, 0), P(t1, 0), P(t1, 600), P(t0, 600)];
+      el('polygon', { points: q.map((p) => p.join(',')).join(' '), class: 'p-oppad' }, g);
+    }
     const a = P(o.t, 0), b = P(o.t + o.w, 0);
     el('line', { x1: a[0], y1: a[1], x2: b[0], y2: b[1], class: 'p-gap' }, g);
     el('line', { x1: a[0], y1: a[1], x2: b[0], y2: b[1], class: `p-opline p-${o.kind}` }, g);

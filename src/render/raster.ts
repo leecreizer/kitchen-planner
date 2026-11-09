@@ -13,7 +13,7 @@ import {
 import { ssr } from 'three/addons/tsl/display/SSRNode.js';
 import { temporalReproject } from 'three/addons/tsl/display/TemporalReprojectNode.js';
 import { recurrentDenoise } from 'three/addons/tsl/display/RecurrentDenoiseNode.js';
-import { sss } from 'three/addons/tsl/display/SSSNode.js';
+import { sss } from './sss';
 import { ssgi } from 'three/addons/tsl/display/SSGINode.js';
 import { traa } from 'three/addons/tsl/display/TRAANode.js';
 import { bloom } from 'three/addons/tsl/display/BloomNode.js';
@@ -67,6 +67,10 @@ export type PostSettings = {
   /** 화면 그림자(SSS) — 햇빛 그림자 맵이 놓치는 접촉 그림자(물체가 바닥·벽에 닿는 곳). 깊이를 먼저 한 번 더 그린다
    *  (three 예제 webgpu_postprocessing_sss) */
   sss: boolean;
+  /** 바닥 거울 반사 — 바닥 아래로 뒤집은 카메라로 방을 한 번 더 그려 바닥에 얹는다(0 = 끔). 화면 밖도 비친다. 흐림 0~1(밉맵) */
+  floorRefl: number; floorBlur: number;
+  /** 상판 반사 배율 — 상판 종류마다 정한 세기에 곱한다(마블 0.35 · HS스톤 0.2 · 테라조 0.15 …, 0 = 끔). 방을 한 번 더 그린다 */
+  counterRefl: number;
 };
 /** 기본값 — 실사(MuTracer) 기준 사진에 맞춘 값(2026-10-29) */
 export const POST_DEFAULTS: PostSettings = {
@@ -104,6 +108,10 @@ export const POST_DEFAULTS: PostSettings = {
   spaceAO: true, spaceLMStr: 1, spaceKeepAO: false, depthFx: 0.5, prodAO: true, prodAOStr: 0.6,
   // 화면 반사는 켬(사용자 설정 2026-11-03) — 접촉 그림자(SSS)는 끔
   ssr: true, ssrIntensity: 0.5, sss: false,
+  // 바닥 거울 반사(사용자 지시 2026-11-06 「바닥에 거울처럼 반사」 · 「마루 반사값을 0.2로」 → 「0.1로, 아직도 강해」) — 기본 0.1, 살짝 흐리게
+  floorRefl: 0.1, floorBlur: 0.25,
+  // 상판 반사(사용자 지시 2026-11-06 「대리석 상판들도 텍스쳐에 따라서 반사값을」) — 종류별 세기 그대로(배율 1)
+  counterRefl: 1,
 };
 /** SSGINode 문서의 시간 누적용 권장값 — 슬라이스 × 걸음 */
 const QUALITY: Record<GIQuality, [number, number]> = { low: [1, 12], mid: [2, 8], high: [3, 16] };
@@ -143,6 +151,8 @@ function loadPost(): PostSettings {
     // 천장 · 벽 · 상부장 이음부마다 두꺼운 그늘 띠가 졌다(사용자 화면 2026-11-06 · 같은 시점 비교로 확인). 메뉴에서 다시 고르면 그대로 쓴다
     if (saved.aoKind === 'ssgi' && !saved.aoV) saved.aoKind = 'both';
     saved.aoV = 2;
+    // 바닥 반사 — 처음 넣을 때 기본 1 로 저장된 설정을 한 번만 0.1(사용자 지시 2026-11-06 「0.2로」 → 「0.1로, 아직도 강해」). 메뉴에서 바꾼 값은 그 뒤로 그대로
+    if ((saved.floorV ?? 0) < 2) { if (saved.floorRefl != null) saved.floorRefl = 0.1; saved.floorV = 2; }
     return { ...POST_DEFAULTS, ...saved };
   } catch { return { ...POST_DEFAULTS }; }
 }
@@ -320,7 +330,9 @@ function webgpu(scene: THREE.Scene, camera: THREE.PerspectiveCamera, mainLight?:
         const pre = pass(scene, camera); (pre as any).transparent = false;
         pre.setMRT(mrt({ output: velocity }));
         const sp: any = sss(pre.getTextureNode('depth'), camera, mainLight!);
-        sp.maxDistance.value = 0.15; sp.thickness.value = 0.02; sp.quality.value = 0.5; sp.useTemporalFiltering = post.traa;
+        // 광선 길이 5cm — 물체가 닿는 자리의 짧은 그림자만. 15cm 일 땐 천장–상부장 몰딩 · 벽 윗선 · 장 끝 · 걸레받이처럼 햇빛 받는 안쪽 모서리마다
+        // 두꺼운 띠가 생겼다(사용자 13번 2026-11-06, 실측: 몰딩 밝기 78 → 61, 0.05/0.01 이면 77)
+        sp.maxDistance.value = 0.05; sp.thickness.value = 0.01; sp.quality.value = 0.5; sp.useTemporalFiltering = post.traa;
         (me as any).sss = sp; (me as any).sssNodes = [pre, sp];
         return builtinShadowContext(sp.getTextureNode().sample(screenUV).r, mainLight!);
       });

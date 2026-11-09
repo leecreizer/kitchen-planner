@@ -18,7 +18,8 @@ import type { RoomObj } from './room3d';
 import { startEmbed, type EmbedKind, type EmbedHandle, type LightPayload } from './render/embed';
 import { createRaster, type PostSettings, type Raster, type RasterRenderer } from './render/raster';
 import { MeshPhysicalNodeMaterial, type WebGPURenderer } from 'three/webgpu';
-import { lights } from 'three/tsl';
+import { abs, float, lights, normalView, normalWorld, positionViewDirection, positionWorld, reflector, smoothstep, step, uniform } from 'three/tsl';
+import { COUNTER_TOP } from './kitchen3d';
 import { bakeSpaceAO, clearSpaceAO, SPACE_FLAG, type LightIn } from './render/spaceao';
 import { disposeTree, isShared, shared } from './dispose';
 type GPT = typeof import('./render/gpupt');
@@ -71,9 +72,11 @@ const RELEASE_MS = 60_000;
  * 고품질 = 지금 기본 그대로 · 보통 = 간접광 보통 · 화면 배율 1.25 · 저사양 = 간접광 끄고 GTAO 그늘만 · 노이즈 제거 · 빛 번짐 끔 · 배율 1 · 라이트맵 성긴 판 */
 export type Quality = 'high' | 'mid' | 'low';
 export const QUALITY_TIERS: Record<Quality, { label: string; dpr: number; shadow: number; lampShadow: number; lightmap: { cell: number; bounce: number }; post: Partial<PostSettings> }> = {
-  high: { label: '고품질', dpr: 1.5, shadow: 4096, lampShadow: 2048, lightmap: { cell: 0.04, bounce: 24 }, post: { ssgi: true, aoKind: 'both', quality: 'high', giRes: 'half', denoise: true, traa: true, bloom: true } },
-  mid: { label: '보통', dpr: 1.25, shadow: 2048, lampShadow: 2048, lightmap: { cell: 0.05, bounce: 16 }, post: { ssgi: true, aoKind: 'both', quality: 'mid', giRes: 'half', denoise: true, traa: true, bloom: true } },
-  low: { label: '저사양', dpr: 1, shadow: 2048, lampShadow: 1024, lightmap: { cell: 0.08, bounce: 10 }, post: { ssgi: true, aoKind: 'gtao', quality: 'low', denoise: false, traa: true, bloom: false } },
+  high: { label: '고품질', dpr: 1.5, shadow: 4096, lampShadow: 2048, lightmap: { cell: 0.04, bounce: 24 }, post: { ssgi: true, aoKind: 'both', quality: 'high', giRes: 'half', denoise: true, traa: true, bloom: true, floorRefl: 0.1, counterRefl: 1 } },
+  // 보통 — 상판 반사는 끈다(바닥 · 상판 반사가 각각 방을 한 번 더 그린다)
+  mid: { label: '보통', dpr: 1.25, shadow: 2048, lampShadow: 2048, lightmap: { cell: 0.05, bounce: 16 }, post: { ssgi: true, aoKind: 'both', quality: 'mid', giRes: 'half', denoise: true, traa: true, bloom: true, floorRefl: 0.1, counterRefl: 0 } },
+  // 저사양 — 바닥 · 상판 반사 모두 끈다
+  low: { label: '저사양', dpr: 1, shadow: 2048, lampShadow: 1024, lightmap: { cell: 0.08, bounce: 10 }, post: { ssgi: true, aoKind: 'gtao', quality: 'low', denoise: false, traa: true, bloom: false, floorRefl: 0, counterRefl: 0 } },
 };
 /** 화면에서만 숨기는 층 — 카메라 쪽 벽 · 위에서 본 천장. 그림자 · 실내 환경맵 · 라이트맵에는 그대로 남아 빛이 벽 · 천장을 뚫지 않는다 */
 const HIDE_LAYER = 1;
@@ -488,6 +491,7 @@ export class Stage {
     r.group.traverse((o) => { const m = o as THREE.Mesh; if (m.isMesh && /^wall-/.test(m.name)) for (const mt0 of [m.material].flat()) if (mt0.shadowSide !== THREE.FrontSide) { mt0.shadowSide = THREE.FrontSide; mt0.needsUpdate = true; } });
     this.design = d;
     this.applySun(); this.applyRoom();
+    this.applyFloorReflection();
     this.depthWindow();
     this.envDirty = true;
     this.scheduleSpaceAO();
@@ -499,10 +503,176 @@ export class Stage {
   private disposeRoom(old: RoomObj) {
     const origOf = new Map<THREE.Material, THREE.Material>();
     this.lmMats.forEach((c, o) => origOf.set(c, o));
+    this.floorNode.forEach((c, o) => origOf.set(c, o));
     old.group.traverse((o) => { const m = o as THREE.Mesh; const orig = m.material ? origOf.get(m.material as THREE.Material) : undefined; if (orig) m.material = orig; });
     for (const c of this.lmMats.values()) c.dispose();
     this.lmMats.clear();
+    for (const c of this.floorNode.values()) c.dispose();
+    this.floorNode.clear();
     disposeTree(old.group);
+  }
+
+  /* ───────── 바닥 거울 반사 — 실시간(WebGPU)에서만. 바닥 아래로 뒤집은 카메라로 방을 한 번 더 그려 바닥 재질에 얹는다 ─────────
+   * 사용자 지시 2026-11-06 「마루 빛반사 말고 바닥에 거울처럼 반사 — 빛 반사는 지금도 강해」 → 재질의 거칠기 · 하이라이트는 그대로 두고
+   * 비친 방만 더한다. 비스듬히 볼수록 진하게(프레넬, 정면 6%), 세기 · 흐림은 후처리 「바닥 반사」. 붙박이장 플래너 거울 · 하이글로시 도어와 같은 방식.
+   * 화면 반사(SSR)와 달리 화면 밖 물체도 비친다. 실사(경로 추적) · 굽기 · 서펠은 원래 재질 — 노드 재질을 읽지 못한다 */
+  private floorRefl: { node: { dispose(): void }; target: THREE.Object3D; emit: ReturnType<typeof float>; amt: ReturnType<typeof uniform>; blur: ReturnType<typeof uniform> } | null = null;
+  /** 라이트맵 전(또는 공간 라이트맵 끔) 바닥 — 원래 재질 → 반사를 얹은 노드 재질 사본 */
+  private floorNode = new Map<THREE.Material, MeshPhysicalNodeMaterial>();
+  private floorOrig(m: THREE.Material) { for (const [o, c] of this.floorNode) if (c === m) return o; return undefined; }
+  private floors() {
+    const out: THREE.Mesh[] = [];
+    this.room?.group.traverse((o) => { if ((o as THREE.Mesh).isMesh && o.name === 'floor') out.push(o as THREE.Mesh); });
+    return out;
+  }
+  private applyFloorReflection() {
+    const amt = this.raster.post.floorRefl ?? 0;
+    const on = this.mode === 'raster' && this.raster.kind === 'webgpu' && amt > 0;
+    const floors = this.floors();
+    if (!on) {
+      for (const f of floors) { const o = this.floorOrig(f.material as THREE.Material); if (o) f.material = o; }
+      // 반사를 통째로 놓는다 — 반사 텍스처를 쥔 바닥 재질(라이트맵 사본 · 반사 사본)에서 떼고 노드 · 렌더 타깃까지.
+      // 붙여 둔 채 실사 · 서펠에 갔다 오면 「파괴된 텍스처를 제출에 사용」 WebGPU 오류가 매 프레임 났다(실측 2026-11-06). 돌아오면 새로 만든다
+      const fr = this.floorRefl;
+      if (fr) {
+        for (const m of [...this.floorNode.values(), ...this.lmMats.values()] as unknown as { emissiveNode: unknown; needsUpdate: boolean }[]) if (m.emissiveNode === fr.emit) { m.emissiveNode = null; m.needsUpdate = true; }
+        fr.target.removeFromParent();
+        fr.node.dispose();
+        this.floorRefl = null;
+      }
+      return;
+    }
+    const fr = this.floorReflNode();
+    fr.amt.value = amt; fr.blur.value = this.raster.post.floorBlur ?? 0.25;
+    for (const f of floors) {
+      let m = f.material as THREE.Material;
+      if (!(m as unknown as { isNodeMaterial?: boolean }).isNodeMaterial) {
+        let c = this.floorNode.get(m);
+        if (!c) { c = new MeshPhysicalNodeMaterial(); for (const k of Stage.LM_KEYS) if ((m as any)[k] !== undefined) (c as any)[k] = (m as any)[k]; c.name = m.name; this.floorNode.set(m, c); }
+        f.material = c; m = c;
+      }
+      const n = m as unknown as { emissiveNode: unknown };
+      if (n.emissiveNode !== fr.emit) { n.emissiveNode = fr.emit; m.needsUpdate = true; }
+    }
+    this.invalidate();
+  }
+  private floorReflNode() {
+    if (this.floorRefl) return this.floorRefl;
+    // 반사면 — 바닥(y 0) 바로 위, 앞(+z)이 위를 보게. 방을 다시 만들어도 바닥 높이는 같아서 장면에 하나만 둔다
+    const target = new THREE.Object3D(); target.name = 'floor-mirror';
+    target.position.set(0, 0.0005, 0); target.rotation.x = -Math.PI / 2;
+    this.scene.add(target);
+    const node = reflector({ resolutionScale: 0.5, target, generateMipmaps: true });
+    const base = (node as unknown as { reflector: { updateBefore(f: { camera: THREE.Camera; frameId: number }): void } }).reflector;
+    // 화면 카메라로 그릴 때만, 프레임에 한 번 — three 기본은 그림자 지도 · 실내 환경맵 · 다른 반사를 그릴 때마다 방을 다시 그린다.
+    // 그리는 동안 숨기는 것:
+    //  - 바닥 — 반사 텍스처를 읽는 바닥이 같은 텍스처에 그려지면 WebGPU 읽기 · 쓰기 충돌(붙박이장 거울에서 실측)
+    //  - 투과 재질(창 유리 · 유리 도어) — 투과는 그리던 화면을 공용 텍스처에 복사해 쓰는데, 반사(절반 크기)와 본 화면이 한 프레임에
+    //    그 텍스처 크기를 번갈아 바꿔 「파괴된 텍스처를 제출에 사용」 WebGPU 오류가 매 프레임 났다(실측 2026-11-06 — 창 크기를 바꾸거나 실사에 갔다 오면)
+    const orig = base.updateBefore.bind(base);
+    let last = -1;
+    base.updateBefore = (frame) => {
+      if (frame.camera !== this.camera || last === frame.frameId) return;
+      last = frame.frameId;
+      const hide: THREE.Object3D[] = this.floors();
+      this.scene.traverse((o) => {
+        const m = o as THREE.Mesh;
+        if (m.isMesh && o.visible && ([m.material].flat() as THREE.MeshPhysicalMaterial[]).some((x) => (x?.transmission ?? 0) > 0)) hide.push(o);
+      });
+      const was = hide.map((o) => o.visible);
+      for (const o of hide) o.visible = false;
+      try { orig(frame); } finally { hide.forEach((o, i) => { o.visible = was[i]; }); }
+    };
+    const amt = uniform(1), blur = uniform(0.25);
+    // 프레넬 — 정면 6%, 비스듬할수록 진하게(코팅한 마루 · 광택 타일)
+    const cos = normalView.dot(positionViewDirection).abs().clamp(0, 1);
+    const fres = float(1).sub(cos).pow(5).mul(0.94).add(0.06);
+    const emit = node.level(blur.mul(6)).rgb.mul(fres).mul(amt) as unknown as ReturnType<typeof float>;
+    this.floorRefl = { node, target, emit, amt, blur };
+    return this.floorRefl;
+  }
+
+  /* ───────── 상판 반사 — 대리석 · 엔지니어드 스톤 상판 윗면에 방이 비친다(실시간 WebGPU). 바닥 반사와 같은 방식, 높이 910 면 ─────────
+   * 사용자 지시 2026-11-06 「대리석 상판들도 텍스쳐에 따라서 반사값을 적용」 — 상판 종류마다 세기 · 흐림이 다르다(counterGloss).
+   * 후처리 「상판 반사」는 전체 배율(0 = 끔). 윗면에만 — 옆면 · 다른 높이 판(식탁형 아일랜드 등)엔 얹지 않는다 */
+  private counterRefl: { node: { dispose(): void }; target: THREE.Object3D; tex: ReturnType<typeof reflector> } | null = null;
+  /** 상판 원래 재질 → 반사를 얹은 노드 사본(세기 유니폼 · 종류별 기본 세기) */
+  private counterNode = new Map<THREE.Material, { mat: MeshPhysicalNodeMaterial; amt: ReturnType<typeof uniform>; base: number }>();
+  private counterOrig(m: THREE.Material) { for (const [o, c] of this.counterNode) if (c.mat === m) return o; return undefined; }
+  private counters() {
+    const out: THREE.Mesh[] = [];
+    this.kitchen?.traverse((o) => { if ((o as THREE.Mesh).isMesh && o.name === 'counter') out.push(o as THREE.Mesh); });
+    return out;
+  }
+  /** 상판 종류별 [반사 세기, 흐림] — 광을 낸 마블이 가장 또렷하고, 콘크리트 느낌 · 스테인리스(헤어라인)는 흐리다 */
+  private static counterGloss(name: string): [number, number] {
+    if (/마블/.test(name)) return [0.35, 0.08];
+    if (/글램/.test(name)) return [0.3, 0.12];
+    if (/콘크리트/.test(name)) return [0.08, 0.45];
+    if (/HS스톤/.test(name)) return [0.2, 0.15];
+    if (/테라조/.test(name)) return [0.15, 0.25];
+    if (/스테인/.test(name)) return [0.2, 0.6];
+    return [0.12, 0.3];
+  }
+  private applyCounterReflection() {
+    const k = this.raster.post.counterRefl ?? 0;
+    const on = this.mode === 'raster' && this.raster.kind === 'webgpu' && k > 0;
+    const counters = this.counters();
+    if (!on) {
+      for (const m of counters) { const o = this.counterOrig(m.material as THREE.Material); if (o) m.material = o; }
+      if (this.counterRefl) { this.counterRefl.target.removeFromParent(); this.counterRefl.node.dispose(); this.counterRefl = null; }
+      for (const c of this.counterNode.values()) c.mat.dispose();
+      this.counterNode.clear();
+      return;
+    }
+    const r = this.counterReflNode();
+    for (const mesh of counters) {
+      const cur = mesh.material as THREE.Material;
+      const orig = this.counterOrig(cur) ?? cur;
+      let c = this.counterNode.get(orig);
+      if (!c) {
+        const mat = new MeshPhysicalNodeMaterial();
+        for (const key of Stage.LM_KEYS) if ((orig as any)[key] !== undefined) (mat as any)[key] = (orig as any)[key];
+        mat.name = orig.name;
+        const [base, blur] = Stage.counterGloss(orig.name);
+        const amt = uniform(base * k);
+        const cos = normalView.dot(positionViewDirection).abs().clamp(0, 1);
+        const fres = float(1).sub(cos).pow(5).mul(0.94).add(0.06);
+        // 윗면만 — 위를 보는 면 · 높이 910 근처
+        const top = smoothstep(0.9, 0.98, normalWorld.y).mul(step(abs(positionWorld.y.sub(COUNTER_TOP * S)), 0.006));
+        mat.emissiveNode = r.tex.level(float(blur * 6)).rgb.mul(fres).mul(amt).mul(top);
+        c = { mat, amt, base };
+        this.counterNode.set(orig, c);
+      }
+      c.amt.value = c.base * k;
+      mesh.material = c.mat;
+    }
+    this.invalidate();
+  }
+  private counterReflNode() {
+    if (this.counterRefl) return this.counterRefl;
+    const target = new THREE.Object3D(); target.name = 'counter-mirror';
+    target.position.set(0, COUNTER_TOP * S + 0.0005, 0); target.rotation.x = -Math.PI / 2;
+    this.scene.add(target);
+    const tex = reflector({ resolutionScale: 0.5, target, generateMipmaps: true });
+    const base = (tex as unknown as { reflector: { updateBefore(f: { camera: THREE.Camera; frameId: number }): void } }).reflector;
+    // 바닥 반사와 같은 규칙 — 화면 카메라 · 프레임에 한 번, 그리는 동안 상판(읽기 · 쓰기 충돌)과 투과 재질(공용 화면 복사 텍스처 크기 충돌)은 숨긴다
+    const orig = base.updateBefore.bind(base);
+    let last = -1;
+    base.updateBefore = (frame) => {
+      if (frame.camera !== this.camera || last === frame.frameId) return;
+      last = frame.frameId;
+      const hide: THREE.Object3D[] = this.counters();
+      this.scene.traverse((o) => {
+        const m = o as THREE.Mesh;
+        if (m.isMesh && o.visible && ([m.material].flat() as THREE.MeshPhysicalMaterial[]).some((x) => (x?.transmission ?? 0) > 0)) hide.push(o);
+      });
+      const was = hide.map((o) => o.visible);
+      for (const o of hide) o.visible = false;
+      try { orig(frame); } finally { hide.forEach((o, i) => { o.visible = was[i]; }); }
+    };
+    this.counterRefl = { node: tex, target, tex };
+    return this.counterRefl;
   }
 
   /* ───────── 실내 환경맵 — 방 가운데서 큐브맵을 찍어 환경광 · 반사로(붙박이장 플래너와 같은 방식).
@@ -590,7 +760,7 @@ export class Stage {
     const origOf = new Map<THREE.Material, THREE.MeshStandardMaterial>();
     this.lmMats.forEach((c, o) => origOf.set(c, o as THREE.MeshStandardMaterial));
     this.invalidate();
-    if (!tex) { for (const m of meshes) { const o = origOf.get(m.material as THREE.Material); if (o) m.material = o; } this.envDirty = true; return; }
+    if (!tex) { for (const m of meshes) { const o = origOf.get(m.material as THREE.Material); if (o) m.material = o; } this.envDirty = true; this.applyFloorReflection(); return; }
     let ls: ReturnType<typeof lights> | null = null;
     if (this.raster.kind === 'webgpu') {
       // 다운라이트 · 메인 조명은 뺀다 — 라이트맵에 그림자째 구웠다
@@ -600,7 +770,7 @@ export class Stage {
     }
     for (const m of meshes) {
       const cur = m.material as THREE.MeshStandardMaterial;
-      const orig = origOf.get(cur) ?? cur;
+      const orig = origOf.get(cur) ?? (this.floorOrig(cur) as THREE.MeshStandardMaterial | undefined) ?? cur;   // 바닥 반사 사본이면 그 원래 재질
       let c = this.lmMats.get(orig);
       if (!c) { c = (ls ? new MeshPhysicalNodeMaterial() : new THREE.MeshPhysicalMaterial()) as unknown as THREE.MeshStandardMaterial; c.name = orig.name; this.lmMats.set(orig, c); }
       for (const k of Stage.LM_KEYS) if ((orig as any)[k] !== undefined) (c as any)[k] = (orig as any)[k];
@@ -612,6 +782,7 @@ export class Stage {
       m.material = c;
     }
     this.envDirty = true;
+    this.applyFloorReflection();     // 라이트맵 사본 바닥에 반사를 다시 얹는다
   }
   /** 공간 라이트맵 다시 굽기 — 0.6초 모아서(끌기 · 연속 변경 중엔 미룬다). 실시간 화면에서만.
    *  한 번에 하나씩 — 굽기(3~6초) 중에 다음 굽기가 시작되면 같은 작업자들의 응답 받는 곳을 덮어써 앞 굽기가 오류로 끝났다
@@ -673,9 +844,12 @@ export class Stage {
   /** 후처리 — 노출 배율이 바뀌면 화면 노출도 다시 */
   setPost(p: Partial<import('./render/raster').PostSettings>) {
     this.raster.setPost(p); this.applyRoom();
+    if ('floorRefl' in p || 'floorBlur' in p) this.applyFloorReflection();
+    if ('counterRefl' in p) this.applyCounterReflection();
     if ('spaceAO' in p) { if (this.raster.post.spaceAO) this.scheduleSpaceAO(); else clearSpaceAO(); }
     if ('spaceLMStr' in p) for (const c of this.lmMats.values()) c.lightMapIntensity = this.raster.post.spaceLMStr ?? 1;
     this.invalidate();
+    if ('ssr' in p || 'sss' in p) this.onModeChange?.();
   }
   private pushLight() {
     if (this.mode !== 'bake' && this.mode !== 'surfel') return;
@@ -697,7 +871,15 @@ export class Stage {
     this.kitchen = k;
     this.scene.add(k);
     // 옛 부엌 놓기 — 장 형상 · 재질 캐시(shared)는 남기고 나머지(상판 · 걸레받이 · 찬넬 · EP 등 매번 새로 만든 것)와 렌더러 내부 객체를
-    if (old && old !== k) disposeTree(old);
+    if (old && old !== k) {
+      // 상판 반사 사본은 원래 재질로 되돌린 뒤 같이 놓는다(둘 다 이번 부엌을 만들 때 새로 만든 것)
+      old.traverse((o) => {
+        const m = o as THREE.Mesh, orig = m.isMesh && o.name === 'counter' ? this.counterOrig(m.material as THREE.Material) : undefined;
+        if (orig) { this.counterNode.get(orig)!.mat.dispose(); this.counterNode.delete(orig); m.material = orig; }
+      });
+      disposeTree(old);
+    }
+    this.applyCounterReflection();
     if (this.lines) this.applyLines();
     this.sceneChanged();
     this.envDirty = true;
@@ -765,6 +947,8 @@ export class Stage {
   /* ───────── 실사 렌더 ───────── */
   mode: RenderMode = 'raster';
   onStatus?: (t: string) => void;
+  /** 화면 방식이 바뀌었을 때(실사 방식 · 후처리의 SSR · SSS) — 메뉴 표시를 실제 상태로 맞춘다 */
+  onModeChange?: () => void;
   /** 굽기 · 서펠 결과를 다시 쓸지 — 설계 · 문 열림이 같으면 같은 결과 */
   stateKey: () => string = () => '';
   private sky?: THREE.Texture;
@@ -831,6 +1015,9 @@ export class Stage {
   }
   private modeReq = 0;
   async setMode(mode: RenderMode) {
+    try { await this.switchMode(mode); } finally { this.onModeChange?.(); }
+  }
+  private async switchMode(mode: RenderMode) {
     // 늦게 끝난 앞 요청이 뒤 요청을 덮지 않게 — MuTracer 를 받는 동안 「실시간」을 누르면, 받은 뒤 MuTracer 로 바뀌어
     // 메뉴는 실시간인데 경로 추적이 계속 돌았다
     const req = ++this.modeReq;
@@ -870,6 +1057,9 @@ export class Stage {
     else if (this.rasterEnv) { this.scene.environment = this.rasterEnv.env; this.scene.environmentIntensity = this.roomCfg.env * RASTER_ENV; }
     // 공간 라이트맵은 실시간에서만 — 경로 추적 · 굽기 · 서펠은 빛을 직접 계산한다
     if (mode === 'raster') { this.envDirty = true; this.scheduleSpaceAO(); } else clearSpaceAO();
+    // 바닥 · 상판 반사 — 실시간에서만(실사 엔진은 원래 재질을 읽는다)
+    this.applyFloorReflection();
+    this.applyCounterReflection();
     // 숨긴 벽 · 천장 방식이 바뀐다 — 다음 프레임에 다시 정한다
     this.room?.group.traverse((o) => { delete o.userData.hid; o.layers.set(0); if (o.name === 'roof-shadow') o.visible = mode === 'raster'; });
     this.kitchen?.traverse((o) => { delete o.userData.hid; o.layers.set(0); });

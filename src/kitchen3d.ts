@@ -306,14 +306,18 @@ function bespokeFridge(kind: 'oneL' | 'oneR' | 'quad' | 'sbs', W: number, H: num
     const GW = 22, RE = 14;
     const sx = grip === 'x0' ? GW : 0, ex = grip === 'x1' ? GW : 0;
     const pw = w - sx - ex, pcx = cx + (sx - ex) / 2;
-    add(box(pw, h, PT - PANEL, fridgeBody, pcx, cy, bodyD + (PT - PANEL) / 2));
-    add(box(pw, h, PANEL, panel, pcx, cy, bodyD + PT - PANEL / 2));
+    // 문 측면은 검게(사용자 2026-11-06) — 문 몸통은 검정, 앞 컬러 패널은 앞면(+z)만 색이고 옆 테두리 8 도 검정
+    add(box(pw, h, PT - PANEL, fridgeDark, pcx, cy, bodyD + (PT - PANEL) / 2));
+    const front: THREE.Mesh = box(pw, h, PANEL, panel, pcx, cy, bodyD + PT - PANEL / 2);
+    front.material = [fridgeDark, fridgeDark, fridgeDark, fridgeDark, panel, fridgeDark];
+    add(front);
     if (grip === 'x0' || grip === 'x1') {
       const gx = grip === 'x0' ? x0 + gap / 2 + GW / 2 : x1 - gap / 2 - GW / 2;
       add(box(GW, h, PT - RE, fridgeDark, gx, cy, bodyD + (PT - RE) / 2));
     }
     g.add(pivot);
-    doors.push(hinge === 'drawer' ? { pivot, kind: 'drawer', amt: Math.round(bodyD * 0.7), max: 1 } : { pivot, kind: 'swing', amt: hinge === 'L' ? -1 : 1, max: Math.PI / 2 });
+    // 냉장고 문은 「문 열기」에서 열지 않는다(사용자 2026-11-06 「냉장고 도어는 안열려도돼」) — 문 묶음(doors)에 넣지 않는다
+    void doors;
   };
   if (kind === 'oneL' || kind === 'oneR') {
     door(0, W, base, H, kind === 'oneL' ? 'L' : 'R', kind === 'oneL' ? 'x1' : 'x0');
@@ -346,8 +350,25 @@ function worldUV(g: THREE.BufferGeometry, su: number, sv = su) {
 
 /* ───────── 기기 모델 (홈뷰 상품 GLB, m 단위 · 앞면 +z) ─────────
  *  sink_a = 싱크볼(SSU000166, 818×450 · 윗면 y 0~5, 볼은 아래로) · faucet_a = 수전(SHD000146, 바닥 원점 · 토출구 +z)
- *  hob_a = 인덕션(SCB000273, 626×7×526 검은 유리 · 바닥 원점). Draco + WebP 압축본(gltf.ts) */
+ *  hob_a = 인덕션(SCB000273, 626×7×526 검은 유리 · 바닥 원점). Draco + WebP 압축본(gltf.ts)
+ *  oven/SEB… = 빌트인 오븐 — 원점 = 가로 가운데 · 바닥 · 설치 면(장 몸통 앞면), 앞판이 +z 로 4~6cm 나온다 */
 const propCache = new Map<string, Promise<THREE.Object3D>>();
+/** 고른 카탈로그 오븐 → 홈뷰 오븐 모델. 같은 모델 형상은 없어 같은 브랜드 · 비슷한 높이로. 앞판 로고 — SEB000048 · 057 · 060 Miele,
+ *  SEB000070 SAMSUNG(홈뷰는 워머 서랍 EOD101 과 한 모델이라 서랍 부분을 지우고 넣었다 — 오븐이 원점 137 위에서 시작), SEB000049 로고 없음(다이얼 둘).
+ *  다른 브랜드 로고가 보이면 안 된다 — 맞는 브랜드 모델이 없는 가게나우 · LG · 고르지 않음은 SEB000049.
+ *  카탈로그는 가게나우 전기오븐도 모델기호가 EOB-H7464BP 라 밀레와 갈리지 않는다 */
+const OVEN_PROP: Record<string, string> = {
+  'EOB-H7464BP': 'SEB000048', 'EOM-G7860BM': 'SEB000057',                                            // 밀레 전기오븐 60
+  'EOB-H7240BM': 'SEB000060', 'EOB-H7840BM': 'SEB000060',                                            // 밀레 콤비 45
+  'EOB-NQ36A6555CK': 'SEB000070', 'EOB-NQ36A6588CW': 'SEB000070',                                    // 삼성 45(글램화이트도 검은 모델)
+  'EOB-BMP250130': 'SEB000049', 'MZ385EBTA': 'SEB000049', 'MZ385EBTAD': 'SEB000049',                 // 가게나우 · LG
+};
+const OVEN_DEFAULT = 'SEB000049';
+/** 오븐장 빈 칸(장 로컬 mm) — 아래 앞판 윗선 ~ 위 레일 아랫선 · 몸통 앞면 · 도어 앞면. 원본 모듈 실측(EO/ML3 3FO3N09LU3E1 · KB 3FO3PGLMHIVB) */
+const OVEN_SLOT: Record<Series, { y0: number; y1: number; body: number; front: number }> = {
+  EO: { y0: 222, y1: 832, body: 570, front: 595 },
+  KB: { y0: 215, y1: 816, body: 570, front: 593 },
+};
 function propModel(name: string): Promise<THREE.Object3D> {
   let p = propCache.get(name);
   if (!p) {
@@ -561,15 +582,18 @@ export async function buildKitchen(c: Candidate, d: Design, cat: KitchenCatalog,
     const eps = list.filter((e) => e.item.tag === 'ep').map((e) => e.item);
     const g = tag(frameGroup(f), f);
     if (wall == null) g.userData.island = true;
-    // 연속 구간 묶기
-    const runsOf = (pick: (e: { item: Item; obj: THREE.Object3D }) => boolean, sameTop = false) => {
+    // 연속 구간 묶기 — joinGap: 그 폭 이하 빈 칸(EP 없는 곳)은 건너 이어 묶는다. anyDepth: 깊이가 달라도(코너장 650 · 일반 570) 잇는다
+    const epIn = (t0: number, t1: number) => eps.some((e) => e.t < t1 + 1 && e.t + e.w > t0 - 1);
+    const runsOf = (pick: (e: { item: Item; obj: THREE.Object3D }) => boolean, sameTop = false, joinGap = 0, anyDepth = false) => {
       const xs = list.filter(pick).sort((a, b) => a.item.t - b.item.t);
       const res: { t0: number; t1: number; top: number; depth: number }[] = [];
       for (const e of xs) {
         const last = res[res.length - 1];
         const dep = (e.obj.userData.depth as number | undefined) ?? last?.depth ?? (e.item.level === 'wall' ? 320 : 570), top = e.obj.userData.top as number;
+        const gap = last ? e.item.t - last.t1 : 0;
+        const near = Math.abs(gap) < 2 || (gap > 0 && gap <= joinGap && !epIn(last.t1, e.item.t));
         // 윗선이 다르면 끊는다 — 상부장(2250)이 키큰장 EP(예전 2339)와 한 줄로 묶여 서라운딩이 장 위로 89 떠 있었다
-        if (last && Math.abs(e.item.t - last.t1) < 2 && Math.abs(dep - last.depth) < 60 && (!sameTop || Math.abs(top - last.top) < 5)) { last.t1 = e.item.t + e.item.w; last.top = Math.max(last.top, top); }
+        if (last && near && (anyDepth || Math.abs(dep - last.depth) < 60) && (!sameTop || Math.abs(top - last.top) < 5)) { last.t1 = e.item.t + e.item.w; last.top = Math.max(last.top, top); }
         else res.push({ t0: e.item.t, t1: e.item.t + e.item.w, top, depth: dep });
       }
       return res;
@@ -583,7 +607,10 @@ export async function buildKitchen(c: Candidate, d: Design, cat: KitchenCatalog,
     // 걸레받이 — 하부장 · 키큰장 아래 (냉장고 · EP 제외). 섬 뒤 FIX 쪽은 FIX 면에서 들어간 자리
     const isFix = list.some((e) => e.item.tag === 'fix');
     // 로봇청소기장은 걸레받이를 비운다 — 줄이 거기서 끊기고 양쪽에 측면 걸레받이가 생겨 대기 공간 옆을 막는다
-    for (const r of runsOf((e) => (e.item.level === 'base' || e.item.level === 'tall') && e.item.tag !== 'ep' && e.item.key !== 'fridge' && e.item.key !== 'islandOpen' && e.item.key !== 'pantryCorner' && !e.item.robot)) {
+    // 벽 줄은 150 이하 빈 칸(코너장 앞 비운 자리 등)을 건너 잇고, 깊이가 달라도(코너장 650) 잇는다 — 걸레받이는 장 깊이와 상관없이 같은 자리(PLINTH_Z).
+    // 아일랜드를 붙인 7자 자리에서 줄이 두 토막(끝마다 측면판)으로 갈려 아일랜드 뒤(FIX) 걸레받이가 이을 판 없이 끝나 틈이 보였다
+    // (사용자 2026-11-06 「7자이면 연결」). EP 가 있는 빈 칸은 그대로 끊는다
+    for (const r of runsOf((e) => (e.item.level === 'base' || e.item.level === 'tall') && e.item.tag !== 'ep' && e.item.key !== 'fridge' && e.item.key !== 'islandOpen' && e.item.key !== 'pantryCorner' && !e.item.robot, false, wall != null ? 150 : 0, true)) {
       let a = r.t0, b = r.t1;
       const zf = isFix ? -50 : PLINTH_Z;
       // 벽 코너에서 비워 둔 쪽 — 옆 줄 걸레받이까지 늘려 맞물림
@@ -632,6 +659,7 @@ export async function buildKitchen(c: Candidate, d: Design, cat: KitchenCatalog,
   // 상판
   const cm = cat.counters.find((x) => x.id === d.counter) ?? cat.counters[0];
   const counterMat = new THREE.MeshStandardMaterial({ map: texture(texUrl(cm.id)), roughness: cm.name.includes('스테인') ? 0.3 : 0.32, metalness: cm.name.includes('스테인') ? 0.8 : 0 });
+  counterMat.name = cm.name;   // 상판 종류 — 실시간 화면의 상판 반사 세기를 이름으로 정한다(scene.ts counterGloss)
   for (const ct of c.counters) {
     const g = tag(frameGroup(ct.frame), ct.frame);
     // 판 모양(t, z) — 싱크볼 자리는 구멍
@@ -652,6 +680,7 @@ export async function buildKitchen(c: Candidate, d: Design, cat: KitchenCatalog,
     geo.computeVertexNormals();
     worldUV(geo, cm.size);
     const mesh = new THREE.Mesh(geo, counterMat); mesh.castShadow = mesh.receiveShadow = true;
+    mesh.name = 'counter';
     g.add(mesh);
     if (ct.island) g.userData.island = true;
     if (ct.island && ct.z0 <= -220 && ct.z0 > -500) {
@@ -752,6 +781,21 @@ export async function buildKitchen(c: Candidate, d: Design, cat: KitchenCatalog,
       if (it.wall == null) g.userData.island = true;
     }
     group.add(g);
+  }
+  // 오븐장 — 원본은 칸만 비워 둔다 → 오븐 기기(사용자 2026-11-06 「오븐 모델링도 가져와서 오븐장에 적용해」).
+  // 60 오븐은 칸 바닥에, 45 오븐(콤비 · 스마트오븐)은 칸 위(레일 밑)에 붙이고 아래 남는 칸은 도어 재질 판으로(서랍 앞판처럼)
+  for (const { item, obj } of out) {
+    if (item.key !== 'oven') continue;
+    const slot = OVEN_SLOT[series];
+    const ov = await propModel(`oven/${OVEN_PROP[d.appliance?.oven ?? ''] ?? OVEN_DEFAULT}`);
+    ov.scale.setScalar(1000);
+    ov.updateMatrixWorld(true);
+    const bb = new THREE.Box3().setFromObject(ov);
+    const h = bb.max.y - bb.min.y, top = h < 560 ? slot.y1 - 2 : slot.y0 + h;
+    ov.position.set(item.w / 2 - (bb.min.x + bb.max.x) / 2, top - bb.max.y, slot.body);
+    obj.add(ov);
+    const fy0 = slot.y0 + 2, fy1 = top - h - 3;
+    if (fy1 - fy0 > 20) obj.add(box(item.w - 4, fy1 - fy0, 18, dm, item.w / 2, (fy0 + fy1) / 2, slot.front - 9));
   }
   // 로봇청소기장 — 걸레받이 자리(높이 PLINTH, 장 바닥 아래)에 안쪽 마감 · 바닥 판 · 로봇청소기(Ø350 · 높이 95) · 충전대
   for (const { item, obj } of out) if (item.robot) {
