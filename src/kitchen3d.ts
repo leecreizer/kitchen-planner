@@ -381,9 +381,10 @@ function propModel(name: string): Promise<THREE.Object3D> {
   return p.then((s) => s.clone(true));
 }
 
-export async function buildKitchen(c: Candidate, d: Design, cat: KitchenCatalog, grade: GradeDef, doorObs: string, onProgress?: (done: number, all: number) => void): Promise<KitchenObj> {
+/** aside = 곁가지 조립(교체 · 추가 카드 썸네일) — 형상 캐시 세대를 올리거나 덜어내지 않는다. 올리면 몇 장만 찍어도 지금 화면 장의 형상이 「오래 안 씀」으로 놓였다 */
+export async function buildKitchen(c: Candidate, d: Design, cat: KitchenCatalog, grade: GradeDef, doorObs: string, onProgress?: (done: number, all: number) => void, aside = false): Promise<KitchenObj> {
   const t0 = performance.now();
-  cabinetCacheGeneration();
+  if (!aside) cabinetCacheGeneration();
   const group = new THREE.Group();
   group.name = 'kitchen';
   const series: Series = grade.series;
@@ -823,7 +824,7 @@ export async function buildKitchen(c: Candidate, d: Design, cat: KitchenCatalog,
   for (const { item, obj } of out) if (item.tag === 'island' || item.tag === 'fix' || (item.wall == null && item.level === 'base')) obj.userData.island = true;
   void COUNTER_D;
   limitDoors(group, doors);
-  trimCabinetCache();
+  if (!aside) trimCabinetCache();
   return { group, items: out, ms: performance.now() - t0, doorMat, doors };
 }
 

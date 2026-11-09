@@ -7,3 +7,6 @@ dist
 # 프롬프트 AI 키(서버 쪽) — 올리지 않는다
 .env.local
 *.local
+
+# 개발 서버 기록(브라우저 오류 · 3D 상태)
+.devlog

@@ -1,6 +1,8 @@
 // 부엌 셀프 설계 — 단계 패널 · 자동 배치 · 3D · 평면도를 잇는다
+import { devact, devlog, recentActs } from './devlog';   // 개발 서버 기록(오류 · 3D 상태) — 다른 모듈보다 먼저
 import { applyNonStandard, autoPlan, upperBottomOf, FRIDGE_SPEC, fridgeSpec, STYLE_LABEL, widthsOf, wallBlocks, BASE_D, WALL_D, CORNER_D, type Candidate, type Frame, type Item } from './autoplan';
 import { buildKitchen, buildSplashes, setDoors, type KitchenObj } from './kitchen3d';
+import type { DoorPart } from './cabinet3d';
 import { doorBroken, doorGaps, loadCatalog, texUrl, usableDoors, type DoorDef, type GradeDef, type KitchenCatalog, type ModuleDef } from './kjlLib';
 import { DINING_SETS, DINING_SHAPES, buildDining, diningOf, diningPlace } from './dining3d';
 import { APPLIANCES, APPLIANCE_CATS, DOOR_MISSING, applianceOf, counterLabel, doorLabel, type ApplianceCat } from './catalog';
@@ -18,6 +20,7 @@ import { byPriority, FILL_MAX, FILL_MIN, nudge, rowGroup, slotGroup, slotLayout,
 import { decode, encode, fromFile, History, toFile, type Snapshot } from './project';
 import { bomCsv, bomGaps, buildBom } from './bom';
 import { AI_MODELS, aiDesign, aiStatus, type AiProvider } from './ai';
+import { thumbPair, type ThumbItem } from './thumbs';
 import pkg from '../package.json';
 
 const $ = <T extends HTMLElement = HTMLElement>(s: string) => document.querySelector(s) as T;
@@ -31,6 +34,8 @@ let selectedOp: string | null = null;
 let buildToken = 0;
 let lastKitchen: KitchenObj | null = null;
 let picked: Item | null = null;
+/** 교체 · 추가 미리보기 — 배치안 복사본(c)에 바꿔 끼운 상태. base = 원래 배치안, orig = 고른 장(base), item = 미리 보는 장(c), back = 복사본 장 → 원래 장 */
+let preview: { base: Candidate; c: Candidate; orig: Item; item: Item; back: Map<Item, Item>; key: string; side?: 'L' | 'R'; cam: [THREE.Vector3, THREE.Vector3] } | null = null;
 
 /* ───────── 되돌리기 · 다시 하기 · 자동 저장 ─────────
  * 바뀐 상태(설계 + 지금 배치안)를 글로 쌓는다 — 되돌리기 · 다시 하기 각 50번(사용자 2026-11-06).
@@ -44,7 +49,8 @@ for (const t of ['pointerup', 'pointercancel', 'blur']) window.addEventListener(
 function scheduleCommit() { clearTimeout(commitTimer); commitTimer = window.setTimeout(commit, 400); }
 function commit() {
   commitTimer = 0;
-  if (restoring) return;
+  // 미리보기는 쌓지 않는다 — 적용하면 그때, 취소하면 원래 상태 그대로(같은 상태라 다시 쌓이지 않음)
+  if (restoring || preview) return;
   if (pressed) { scheduleCommit(); return; }
   const s = encode({ design: d, plan: current });
   hist.record(s);
@@ -62,6 +68,75 @@ if (!cat.walls.some((x: { id: string }) => x.id === d.wallpaper)) d.wallpaper = 
 
 const stage = new Stage($('#three'));
 (window as any).__stage = stage;   // 콘솔·시험 도구용
+/* 3D 화면 지켜보기 — 2026-11-09 사용자 「3D 캔버스가 계속 날아간다」(헤드리스 시험에선 재현 안 됨). 쓰는 브라우저가 개발 서버로 직접 보낸다:
+ * WebGPU 장치 끊김(three 는 끊기면 그리기를 영영 멈춘다) · 20초마다 3D 상태 · 3D 화면 크기 바뀜. 장치가 끊기면 화면에 다시 불러오기 안내 */
+{
+  type R = { onDeviceLost?: (i: unknown) => void; _isDeviceLost?: boolean; backend?: { isWebGPUBackend?: boolean }; info?: { frame?: number; render?: { frameCalls?: number; drawCalls?: number }; memory?: { geometries?: number; textures?: number } } };
+  const r = stage.renderer as unknown as R;
+  const prevLost = r.onDeviceLost?.bind(r);
+  r.onDeviceLost = (info) => {
+    prevLost?.(info);
+    const i = info as { api?: string; message?: string; reason?: string } | undefined;
+    devlog('device-lost', { api: i?.api, message: i?.message, reason: i?.reason });
+    if (!document.querySelector('#gpu-lost')) {
+      const b = document.createElement('div');
+      b.id = 'gpu-lost';
+      b.innerHTML = '3D 화면 장치(WebGPU)가 끊겼습니다 — 배치는 자동 저장돼 있습니다 <button>다시 불러오기</button>';
+      b.querySelector('button')!.addEventListener('click', () => location.reload());
+      $('#viewport').append(b);
+    }
+  };
+  const beat = (why: string) => {
+    const cv = stage.renderer.domElement as HTMLCanvasElement, rc = cv.getBoundingClientRect();
+    devlog('beat', {
+      why, lost: !!r._isDeviceLost, webgpu: r.backend?.isWebGPUBackend, frame: r.info?.frame, draws: r.info?.render?.drawCalls,
+      geo: r.info?.memory?.geometries, tex: r.info?.memory?.textures, canvas: [cv.width, cv.height, Math.round(rc.width), Math.round(rc.height)], inDom: document.contains(cv),
+      mode: stage.mode, quality: stage.quality, v2d: $('#viewport').classList.contains('v2d'), vis: document.visibilityState,
+      cam: stage.camera.position.toArray().map((v) => +v.toFixed(2)),
+      heapMB: Math.round(((performance as unknown as { memory?: { usedJSHeapSize: number } }).memory?.usedJSHeapSize ?? 0) / 1e6),
+    });
+  };
+  setInterval(() => beat('20s'), 20_000);
+  new ResizeObserver(() => beat('resize')).observe($('#three'));
+  // 같은 장면 · 카메라를 그리는 중에 또 그리기 시작하면 — 그 장면 목록을 덮어써 「renderList[i] undefined」로 그리기가 끊기고
+  // 렌더러 상태(MRT)가 안 돌아와 이후 파이프라인이 계속 무효가 됐다(그 브라우저 기록 04:52). 누가 다시 부르는지 호출 경로를 남긴다
+  {
+    const rr = stage.renderer as unknown as { _renderScene: (...a: unknown[]) => unknown };
+    const orig = rr._renderScene.bind(rr), live = new Set<string>();
+    rr._renderScene = (...a: unknown[]) => {
+      const sc = a[0] as THREE.Object3D, cm = a[1] as THREE.Object3D, key = `${sc?.uuid}|${cm?.uuid}`;
+      if (live.has(key)) {
+        const w = window as unknown as { __nested?: number };
+        w.__nested = (w.__nested ?? 0) + 1;   // 시험 도구용 개수
+        devlog('nested-render', { scene: `${sc?.type}:${sc?.name}`, camera: `${cm?.type}:${cm?.name}`, stack: new Error().stack?.slice(0, 5000), acts: recentActs() });
+      }
+      live.add(key);
+      try { return orig(...a); } finally { live.delete(key); }
+    };
+  }
+  // 탭이 다시 보일 때 캔버스가 비었는지 — 다시 그리기 전(이 순간)과 1.5초 뒤를 64×36 으로 찍어 불투명도 · 밝기 · 밝기 편차를 남긴다
+  const look = async (why: string) => {
+    try {
+      const bmp = await createImageBitmap(stage.renderer.domElement as HTMLCanvasElement, { resizeWidth: 64, resizeHeight: 36 });
+      const g = new OffscreenCanvas(64, 36).getContext('2d')!;
+      g.drawImage(bmp, 0, 0);
+      const px = g.getImageData(0, 0, 64, 36).data, n = px.length / 4;
+      let a = 0, s = 0, s2 = 0;
+      for (let i = 0; i < px.length; i += 4) { const l = (px[i] + px[i + 1] + px[i + 2]) / 3; a += px[i + 3]; s += l; s2 += l * l; }
+      const mean = s / n;
+      devlog('canvas', { why, alpha: Math.round(a / n), lum: Math.round(mean), sd: Math.round(Math.sqrt(Math.max(0, s2 / n - mean * mean))) });
+    } catch (e) { devlog('canvas', { why, err: String(e) }); }
+  };
+  // 후처리 · 실내 조명 설정 — 같은 설정으로 시험 브라우저에서 다시 해 보려고(SSS 를 켜도 기본 설정에선 3D 가 안 비었다)
+  const settings = (why: string) => devlog('settings', { why, post: stage.raster.post, room: stage.roomCfg, quality: stage.quality, mode: stage.mode });
+  setTimeout(() => settings('start'), 3000);
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) return;
+    settings('visible');
+    void look('보임-다시 그리기 전');
+    setTimeout(() => { void look('보임-1.5초 뒤'); beat('visible'); }, 1500);
+  });
+}
 stage.getDesign = () => d;
 const plan = new PlanView($('#plan'));
 
@@ -80,11 +155,13 @@ function rebuildRoom() {
 const FOLD_KEYS = new Set(['cafeTall', 'foldTall']);
 async function rebuildKitchen() {
   const token = ++buildToken;
+  devact('rebuild');
   if (!current) { stage.setKitchen(new (await import('three')).Group()); return; }
   const t0 = performance.now();
   say('부엌장 원본 계산 중…');
   // 폴딩 카페장 · 포켓 폴딩장 — 문은 원본 변수 「도어개폐율」(DROP)로 접혀 포켓에 들어간다. 문 열기 상태를 따른다(원본 기본 100 = 열림)
-  for (const it of current.items) if (FOLD_KEYS.has(it.key)) it.ov = { ...(it.ov ?? {}), DROP: doorsTo ? '100' : '0' };
+  // 미리 보는 장은 문을 연 채로 — 폴딩 문은 원본 변수로만 열린다
+  for (const it of current.items) if (FOLD_KEYS.has(it.key)) it.ov = { ...(it.ov ?? {}), DROP: doorsTo || it === preview?.item ? '100' : '0' };
   const k = await buildKitchen(current, d, cat, grade(), d.door, (n, all) => { if (token === buildToken) say(`부엌장 원본 계산 중… ${n}/${all}`); });
   // 식탁 · 의자 — 부엌 묶음에 같이(벽 숨김과 무관하게 늘 보임)
   k.group.add(await buildDining(d));
@@ -96,7 +173,7 @@ async function rebuildKitchen() {
   islBuilt = current.island ? { x: current.island.cx, z: current.island.cz, rot: current.island.rot } : null;
   if (islandSel) { if (current.island) { markIsland(); renderIslandInfo(); } else unpickIsland(); }
   if (hobSel) { markHob(); renderHobInfo(); }
-  if (picked) pick(current?.items.includes(picked) ? picked : null);
+  if (picked && !preview) pick(current?.items.includes(picked) ? picked : null);
   say(`${grade().label} · 장 ${k.items.length}개 · ${Math.round(performance.now() - t0)}ms`);
   setTimeout(() => { if (token === buildToken) say(null); }, 1800);
   // 장을 직접 고친 것(폭 · 교체 · 추가 · 빼기 · 옮김)도 다시 그리기로 끝난다 — 되돌리기 단계 · 자동 저장
@@ -111,6 +188,7 @@ function aim() {
 
 /** 자동 배치 다시 — 같은 안(벽 조합 · 기능 자리)이 남아 있으면 그것을 유지. build=false 면 평면도만(끄는 중) */
 function replan(keep = true, build = true) {
+  if (preview) endPreview(false, false);
   const prev = current?.id, prevWalls = current?.walls.join();
   cands = autoPlan(d, cat, grade().series);
   // 고른 공간 구조로 놓을 수 없으면(벽이 막힘) 다른 구조로 대신 — 알림을 붙인다
@@ -486,14 +564,17 @@ function moveFixture(key: FixKey, wall: WallId, c: number, done: boolean) {
 }
 /* 하부장 끌기 — 같은 줄 안에서는 옆 장들 사이에 끼워 넣는다(순서만 바뀌고 폭 합은 그대로 → 새 틈 · 휠라 없음).
  * 싱크장 · 식기세척기장 · 쿡탑은 줄 밖(다른 벽 · 줄 끝 너머)으로 끌면 예전처럼 그 자리를 고정해 다시 배치 */
-let slot: { it: Item; group: Item[]; t0s: Map<Item, number>; cand: Candidate; fix0?: Design['fix']; c0: number; out: boolean } | null = null;
+let slot: { it: Item; group: Item[]; t0s: Map<Item, number>; cand: Candidate; fix0?: Design['fix']; c0: number; out: boolean; free: [number, number] } | null = null;
 const FIX_TAGS = ['sink', 'dish', 'hob'] as const;
 const isFix = (x: Item): x is Item & { tag: FixKey } => (FIX_TAGS as readonly string[]).includes(x.tag ?? '');
 function dragItem(it: Item, p: [number, number], p0: [number, number], done: boolean) {
-  if (!current) return;
+  // 미리보기 중엔 끌지 않는다 — 미리보기 배치안(복사본)이 바뀌어 취소 · 적용이 엉킨다
+  if (!current || preview) return;
   if (!slot || slot.it !== it) {
     const group = slotGroup(current.items, it);
-    slot = { it, group, t0s: new Map(group.map((x) => [x, x.t])), cand: current, fix0: d.fix && structuredClone(d.fix), c0: it.t + it.w / 2, out: false };
+    // 줄 끝 옆 빈 공간까지는 끌어 갈 수 있다 — 놓으면 그만큼 빈 자리 쪽으로 옮긴다(nudgeItem → slideFree)
+    const free: [number, number] = [useFree(group[0], 'L', 1e6)?.take ?? 0, useFree(group[group.length - 1], 'R', 1e6)?.take ?? 0];
+    slot = { it, group, t0s: new Map(group.map((x) => [x, x.t])), cand: current, fix0: d.fix && structuredClone(d.fix), c0: it.t + it.w / 2, out: false, free };
   }
   const s = slot, f = it.frame;
   const inRoom = (q: [number, number]): [number, number] => [Math.max(0, Math.min(d.room.w, q[0])), Math.max(0, Math.min(d.room.d, q[1]))];
@@ -503,7 +584,7 @@ function dragItem(it: Item, p: [number, number], p0: [number, number], done: boo
   const a = s.t0s.get(first)!, b = s.t0s.get(last)! + last.w;
   const nw = nearestWall(d.room, ...inRoom(p), d.openWall);
   // 줄 밖 — 싱크 · 식세 · 쿡탑만 (다른 벽 쪽이거나 줄 끝을 장 폭 반 넘게 지남)
-  if (isFix(it) && (nw.wall !== it.wall || c < a - it.w / 2 || c > b + it.w / 2)) {
+  if (isFix(it) && (nw.wall !== it.wall || c < a - s.free[0] - it.w / 2 || c > b + s.free[1] + it.w / 2)) {
     if (!s.out) { for (const x of s.group) x.t = s.t0s.get(x)!; s.out = true; }
     const nw0 = nearestWall(d.room, ...inRoom(p0), d.openWall);
     const off = nw0.wall === it.wall && nw.wall === it.wall ? nw0.t - s.c0 : 0;
@@ -517,7 +598,7 @@ function dragItem(it: Item, p: [number, number], p0: [number, number], done: boo
     if (s.fix0) d.fix = structuredClone(s.fix0); else delete d.fix;
     current = s.cand; renderCands();
   }
-  const cc = Math.max(a + it.w / 2, Math.min(b - it.w / 2, c));
+  const cc = Math.max(a - s.free[0] + it.w / 2, Math.min(b + s.free[1] - it.w / 2, c));
   const { order, ts } = slotLayout(s.group, it, cc, s.t0s);
   if (!done) {
     // 끄는 장은 마우스를 따라가고 옆 장들은 끼울 자리를 비워 둔다
@@ -573,6 +654,21 @@ function nudgeItem(it: Item, delta: number): string | null {
   const mk = (ref: Item) => (w: number): Item => ({ key: ref.level === 'wall' ? 'wfill50' : 'bfill50', level: ref.level, frame: ref.frame, t: 0, w, wall: ref.wall });
   // 끝까지 못 가면 갈 수 있는 데까지 (10 단위로 줄여 가며)
   const grp = rowGroup(cand.items, it, baseRowPick), want = delta;
+  // 빈 공간 쪽이면 그 공간으로 밀어 넣는다(폭 그대로, 떠난 자리는 뒤 장이 메움) — 아래 미리 이동은 줄 길이를 그대로 두어
+  // 빈 자리로는 옮겨지지 않았다(사용자 2026-11-09 「이동도 안돼」). 쿡탑은 후드장이 따라가야 해서 아래 길로
+  const slid = it.tag === 'hob' ? 0 : slideFree(cand, grp, it, delta);
+  if (slid) {
+    followFridgeTop(cand, fr0);
+    const fx = { ...(d.fix ?? {}) };
+    for (const x of rowGroup(cand.items, it, baseRowPick)) if (isFix(x)) fx[x.tag] = { wall: x.wall!, c: x.t + x.w / 2 };
+    d.fix = fx;
+    saveDesign(d);
+    fixPoints(cand); plan.render(d, cand); void rebuildKitchen();
+    say(`${delta > 0 ? '+' : '-'}${slid}mm 옮김 — 빈 자리 쪽으로${slid !== Math.abs(want) ? ' (빈 자리 · 뒤 장이 받는 데까지)' : ''}`);
+    setTimeout(() => say(null), 2200);
+    if (picked === it) pick(it);
+    return null;
+  }
   // 휠라는 벽에 닿는 끝에만 — 그 쪽만 휠라가 먼저 받고, 아닌 쪽은 장이 미리 단위로
   const wallEnds = (g: Item[]): [boolean, boolean] => {
     const w = g[0].wall; if (w == null) return [false, false];
@@ -1183,6 +1279,7 @@ function renderCands() {
 $('#cands').addEventListener('click', (e) => {
   const b = (e.target as HTMLElement).closest('[data-cand]') as HTMLElement | null;
   if (!b) return;
+  if (preview) endPreview(false, false);
   current = cands.find((c) => c.id === b.dataset.cand) ?? current;
   if (current && d.layout !== 'walls') d.walls = current.walls;
   renderCands(); plan.render(d, current); void rebuildKitchen();
@@ -1286,6 +1383,9 @@ function fixThinFills() {
   fixPoints(current);
 }
 function pick(it: Item | null) {
+  // 미리보기 중에 고르기(다른 장 · 빈 곳 · Esc · 닫기)는 미리보기 취소 — 미리보기 배치안의 장이면 원래 배치안의 같은 장으로
+  if (preview) { const o = it && (preview.back.get(it) ?? (preview.base.items.includes(it) ? it : null)); endPreview(false); it = o; }
+  if (it !== picked) devact(`pick ${it ? `${it.key}@${it.wall ?? 'isl'}` : '-'}`);
   picked = it; plan.picked = it;
   if (it) plan.pickedWall = null;
   const obj = it && lastKitchen?.items.find((x) => x.item === it)?.obj;
@@ -1295,8 +1395,10 @@ function pick(it: Item | null) {
   if (diningSel) { diningSel = false; stage.setIslandRing(null); }
   const box = $('#item-info');
   delete box.dataset.op;
+  box.classList.remove('previewing');
   if (it && selectedOp) { selectedOp = null; plan.selected = null; }
   if (!it) { box.hidden = true; return; }
+  const sc = swapCards(it);
   const m = it.key === 'fridge' || it.key === 'fixFill' ? undefined : modOf(it);
   // 냉장고장 — 고른 종류로 제목 · 설명(삼성 비스포크 스타일 직접 모델링)
   const fsp = it.key === 'fridge' ? fridgeSpec(d) : null;
@@ -1313,16 +1415,22 @@ function pick(it: Item | null) {
       <span class="ii-wlist" hidden>${opts.map((w) => `<button data-w="${w}" class="${w === it.w ? 'on' : ''}">${w}</button>`).join('')}</span></span><small>${rng[0]}~${rng[1]}${modOf(it)?.nstd ? ' · 규격 밖은 비규격' : ''}</small></div>
     <div class="ii-note">${it.ov?.STD_YN ? '지금 비규격 폭 · ' : ''}바뀐 폭만큼 옆 장 · 휠라가 줄거나 늘어납니다 (자동 배치를 다시 하면 지워짐)</div>` : `<div class="ii-note">${it.tag === 'ep' ? 'EP 는 20 고정' : '이 장은 폭을 바꾸지 않습니다'}</div>`}
     ${slotMovable(it) ? `<div class="ii-row"><label>위치 (줄 시작 쪽 벽에서)<input data-pos type="number" step="10" value="${Math.round(it.t)}"></label><label>&nbsp;<span class="ii-hint">옆 휠라가 먼저, 넘치면 옆 장이 100 단위로</span></label></div>` : ''}
-    ${swapRow(it)}
+    ${swapRow(it, sc)}
     ${editRow(it)}
     ${it.wall == null && (it.tag === 'island' || it.tag === 'hob' || it.tag === 'fix' || it.tag === 'ep') ? '<div class="ii-acts"><button data-isl-all class="plain">아일랜드 전체 (길이 · 형태 · 회전)</button></div>' : ''}
     ${fridgeRow(it)}`;
   box.hidden = false;
   box.querySelector('[data-isl-all]')?.addEventListener('click', () => { pick(null); pickIsland(); });
-  // 장 · 휠라 추가 · 빼기
-  box.querySelectorAll<HTMLElement>('[data-add-side], [data-add-fill]').forEach((b) => b.addEventListener('click', () => {
-    const fill = !!b.dataset.addFill;
-    const r = addBeside(it, (b.dataset.addSide ?? b.dataset.addFill) as 'L' | 'R', fill);
+  // 장 교체 카드 · 장 추가 카드(「◀ 왼쪽에 장 추가」 · 「오른쪽에 장 추가 ▶」를 누르면 그쪽에 넣을 장, 다시 누르면 닫힘)
+  bindCards(box.querySelector('[data-zone="swap"] .pcards'), sc, it);
+  box.querySelectorAll<HTMLElement>('[data-add-open]').forEach((b) => b.addEventListener('click', () => {
+    const side = b.dataset.addOpen as 'L' | 'R';
+    showAddCards(box, it, addOpen?.it === it && addOpen.side === side ? null : side);
+  }));
+  if (addOpen?.it === it) showAddCards(box, it, addOpen.side); else addOpen = null;
+  // 휠라 추가 — 50 으로 바로
+  box.querySelectorAll<HTMLElement>('[data-add-fill]').forEach((b) => b.addEventListener('click', () => {
+    const r = addBeside(it, b.dataset.addFill as 'L' | 'R', true);
     if (typeof r === 'string') { const n = box.querySelector('.ii-edit-note'); if (n) { n.textContent = r; n.classList.add('err'); } return; }
     void rebuildKitchen(); pick(r);
   }));
@@ -1343,12 +1451,6 @@ function pick(it: Item | null) {
   });
   box.querySelector('[data-robot]')?.addEventListener('click', () => { it.robot = !it.robot; void rebuildKitchen(); pick(it); });
   box.querySelector('[data-robot-run]')?.addEventListener('click', () => { if (robotRun) robotRun.stop = true; else runRobot(it); setTimeout(() => pick(it), 50); });
-  // 장 교체 — 같은 자리(줄)에 들어갈 수 있는 원본 장으로
-  box.querySelectorAll<HTMLElement>('[data-swap]').forEach((b) => b.addEventListener('click', () => {
-    const err = swapItem(it, b.dataset.swap!);
-    if (err) { const n = box.querySelector('.ii-swap-note'); if (n) { n.textContent = err; n.classList.add('err'); } return; }
-    void rebuildKitchen(); pick(it);
-  }));
   box.querySelector('button')!.addEventListener('click', () => pick(null));
   box.querySelector<HTMLInputElement>('[data-pos]')?.addEventListener('change', (e) => {
     const v = Math.round(Number((e.target as HTMLInputElement).value) / 10) * 10, delta = v - Math.round(it.t);
@@ -1437,20 +1539,20 @@ const SWAP: Record<string, string[]> = {
 const swapKeys = (it: Item): string[] => {
   if (it.tag === 'sink' || it.tag === 'ep' || it.tag === 'fix' || it.tag === 'fridge' || /^corner|^wallCorner|^hood$|fridgeTop|pantry|islandOpen|^fixFill/.test(it.key)) return [];
   const list = it.tag === 'hob' ? SWAP.hob : SWAP[it.level] ?? [];
-  return list.filter((k) => cat.modules.some((m) => m.key === k && (m.series === grade().series || m.series === '*')));
+  return list.filter((k) => modK(k));
 };
+/** 이 그레이드(계열)의 원본 장 */
+const modK = (k: string) => cat.modules.find((m) => m.key === k && (m.series === grade().series || m.series === '*'));
 // 휠라는 30 ~ 150 이면 그 폭 그대로(앱 규칙 — 원본 범위 50 아래도 쓴다. 최소 30 은 사용자 2026-11-09, 예전 10)
 const fitsW = (m: ModuleDef | undefined, w: number) => !!m && (/fill/.test(m.key) ? w >= FILL_MIN && w <= FILL_MAX : widthsOf(m).includes(w) || (!!m.nstd && !!m.wmin && !!m.wmax && w >= m.wmin && w <= m.wmax));
-function swapRow(it: Item): string {
-  const keys = swapKeys(it);
-  if (!keys.length) return '';
+function swapRow(it: Item, cards: Card[]): string {
+  if (!cards.length) return '';
   // 로봇청소기장 — 일반 하부장(폭 450 이상)의 걸레받이 자리를 로봇청소기 대기 공간으로
   const robotOk = it.level === 'base' && it.w >= 450 && !it.tag?.match(/sink|dish|hob/);
-  const modK = (k: string) => cat.modules.find((m) => m.key === k && (m.series === grade().series || m.series === '*'));
-  return `<div class="ii-label">장 · 휠라 교체 <small>같은 자리에 들어갈 원본 장 · 휠라(폭 ${FILL_MIN}~${FILL_MAX})</small></div>
-    <div class="ii-swap">${keys.map((k) => { const m = modK(k); const fit = fitsW(m, it.w); return `<button data-swap="${k}" class="${k === it.key ? 'on' : ''}" title="${m?.name ?? k}${fit ? '' : ` · 폭 ${it.w} 이 규격에 없어 가까운 폭으로`}">${m?.label ?? k}${fit ? '' : ' <small>폭 맞춤</small>'}</button>`; }).join('')}</div>
-    ${robotOk ? `<div class="ii-swap"><button data-robot class="${it.robot ? 'on' : ''}" title="걸레받이 자리(높이 112)를 비우고 로봇청소기 · 충전대">로봇청소기장${it.robot ? ' ✓' : ''}</button>${it.robot ? `<button data-robot-run>${robotRun ? '■ 청소 멈춤' : '▶ 청소 시작'}</button>` : ''}</div>` : ''}
-    <div class="ii-note ii-swap-note">바꾼 장은 자동 배치를 다시 하면 지워집니다</div>`;
+  return `<div class="pv-zone" data-zone="swap"><div class="ii-label">장 · 휠라 교체 <small>누르면 그 자리에 미리 보기 · 마우스를 올리면 문 열림</small></div>
+    ${cardGrid(cards, 'swap')}
+    <div class="ii-note ii-swap-note">바꾼 장은 자동 배치를 다시 하면 지워집니다 · 휠라 폭 ${FILL_MIN}~${FILL_MAX}</div></div>
+    ${robotOk ? `<div class="ii-swap"><button data-robot class="${it.robot ? 'on' : ''}" title="걸레받이 자리(높이 112)를 비우고 로봇청소기 · 충전대">로봇청소기장${it.robot ? ' ✓' : ''}</button>${it.robot ? `<button data-robot-run>${robotRun ? '■ 청소 멈춤' : '▶ 청소 시작'}</button>` : ''}</div>` : ''}`;
 }
 /* ───────── 장 추가 · 빼기 — 같은 줄 안에서. 추가하면 옆 장들이 줄고(휠라 먼저), 빼면 늘어난다(휠라 마지막). 자동 배치를 다시 하면 지워짐 ───────── */
 /** 추가 · 빼기를 쓰지 않는 것 — EP · FIX 도어 · 선반 (키큰장 · 냉장고장 옆에도 추가할 수 있다, 사용자 지시 2026-11-06 「모든 장이 가능」) */
@@ -1459,35 +1561,307 @@ const fixedSlot = (it: Item) => it.tag === 'ep' || it.tag === 'fix' || /^fixFill
 const fixedRemove = (it: Item) => it.tag === 'fridge' || /^corner|^wallCorner|fridgeTop|pantry|^hood$/.test(it.key);
 /** 층마다 추가할 장 — [1도어 키, 2도어 키, 기본 폭] */
 const ADD_KEYS: Record<string, [string, string, number]> = { base: ['cook1', 'cook2', 450], wall: ['wall1', 'wall2', 400], tall: ['tall', 'tall2', 600] };
+/** 옆에 넣을 수 있는 장 — 그 층 교체 후보에서 휠라를 뺀 것(휠라는 「휠라 추가」로) */
+const addKeys = (it: Item): string[] => (SWAP[it.level] ?? []).filter((k) => !/fill/.test(k) && modK(k));
+/** 추가할 폭 — 층 기본(하부 450 · 상부 400 · 키큰 600)이 그 장 규격이면 그것, 아니면 그 장 기본 폭(원본 W).
+ *  cap 을 넘으면 cap 안에서 가장 넓은 규격 폭(비규격이 되는 장은 cap 그대로), 없으면 0 */
+function addW(m: ModuleDef, lv: Item['level'], cap: number): number {
+  const ws = widthsOf(m), lvW = ADD_KEYS[lv]?.[2];
+  const pref = lvW && ws.includes(lvW) ? lvW : Number(m.W?.value) || ws[0] || 0;
+  if (pref && pref <= cap) return pref;
+  let best = Math.max(0, ...ws.filter((w) => w <= cap));
+  if (m.nstd && m.wmin && m.wmax && cap >= m.wmin) best = Math.max(best, Math.min(cap, m.wmax));
+  return best;
+}
+let addOpen: { it: Item; side: 'L' | 'R' } | null = null;
 function editRow(it: Item): string {
   if (fixedSlot(it)) return '';
-  const lv = it.level === 'wall' ? '상부장 1도어 400' : it.level === 'tall' ? '키큰장 600' : '조리장 1도어 450';
   const fillOk = it.level === 'base' || it.level === 'wall';
-  return `<div class="ii-label">장 · 휠라 추가 · 빼기 <small>옆에 빈 공간이 있으면 그 자리에, 없으면 옆 장 폭이 바뀝니다</small></div>
-    <div class="ii-swap"><button data-add-side="L">◀ 왼쪽에 장 추가</button><button data-add-side="R">오른쪽에 장 추가 ▶</button></div>
+  const on = (s: 'L' | 'R') => (addOpen?.it === it && addOpen.side === s ? ' class="on"' : '');
+  return `<div class="pv-zone" data-zone="add"><div class="ii-label">장 · 휠라 추가 · 빼기 <small>옆에 빈 공간이 있으면 그 자리에, 없으면 옆 장 폭이 바뀝니다</small></div>
+    <div class="ii-swap"><button data-add-open="L"${on('L')}>◀ 왼쪽에 장 추가</button><button data-add-open="R"${on('R')}>오른쪽에 장 추가 ▶</button></div>
+    <div class="pc-add"></div></div>
     <div class="ii-swap">${fillOk ? '<button data-add-fill="L">◀ 왼쪽에 휠라 추가</button><button data-add-fill="R">오른쪽에 휠라 추가 ▶</button>' : ''}${fixedRemove(it) ? '' : `<button data-remove>이 ${/fill/.test(it.key) ? '휠라' : '장'} 빼기</button>`}</div>
-    <div class="ii-note ii-edit-note">추가하면 장은 ${lv}(빈 칸이면 그 폭에 맞춰 메움), 휠라는 50 — 고른 뒤 교체 · 폭(휠라 ${FILL_MIN}~${FILL_MAX})으로 바꿀 수 있습니다</div>`;
+    <div class="ii-note ii-edit-note">휠라는 50 으로 넣습니다 — 고른 뒤 폭(${FILL_MIN}~${FILL_MAX})을 바꿀 수 있습니다</div>`;
 }
+
+/* ───────── 교체 · 추가 카드 — 썸네일(닫힘, 마우스를 올리면 문 열림) · 들어가는지 먼저 시험 · 누르면 그 자리 미리보기 ─────────
+ * 사용자 2026-11-09 「교체 · 배치 가능한 상품이 글로만 표시돼 형태 구분이 안 된다 · 도어 내부도 확인」.
+ * 3D 조립 그대로 찍은 썸네일로 목록을 훑고, 고른 것은 부엌 안 그 자리에서(문 열고 카메라를 그 장 앞으로) 본 뒤 적용 · 취소 */
+interface Card { key: string; label: string; name: string; ok: boolean; why?: string; item: ThumbItem; on?: boolean }
+/** 배치안 복사본에서 해 본다 — 지금 배치안은 그대로(미리보기 중이면 원래 배치안 기준). fn 은 복사본의 같은 장을 받는다 */
+function onCopy<T>(it: Item, fn: (ci: Item) => T): { c: Candidate; r: T; back: Map<Item, Item> } {
+  const base = preview?.base ?? current!, keep = current, c = structuredClone(base);
+  const back = new Map(c.items.map((x, i) => [x, base.items[i]] as const));
+  current = c;
+  try { return { c, r: fn(c.items[base.items.indexOf(it)]), back }; } finally { current = keep; }
+}
+/** 안 들어가는 카드도 모양은 보이게 — 그 장 기본 폭으로 찍는다 */
+const thumbOf = (k: string, lv: Item['level']): ThumbItem => ({ key: k, level: lv, w: addW(modK(k)!, lv, Infinity), ...(k === 'dish' ? { tag: 'dish' as const } : {}) });
+function swapCards(it: Item): Card[] {
+  return swapKeys(it).map((k) => {
+    const m = modK(k)!, c = { key: k, label: m.label, name: m.name };
+    if (k === it.key) return { ...c, ok: true, on: true, item: it };
+    const t = onCopy(it, (ci) => swapItem(ci, k) ?? ci);
+    return typeof t.r === 'string' ? { ...c, ok: false, why: t.r, item: thumbOf(k, it.level) } : { ...c, ok: true, item: t.r };
+  });
+}
+function addCards(it: Item, side: 'L' | 'R'): Card[] {
+  return addKeys(it).map((k) => {
+    const m = modK(k)!, c = { key: k, label: m.label, name: m.name };
+    const t = onCopy(it, (ci) => addBeside(ci, side, false, k));
+    return typeof t.r === 'string' ? { ...c, ok: false, why: t.r, item: thumbOf(k, it.level) } : { ...c, ok: true, item: t.r };
+  });
+}
+function cardGrid(cards: Card[], kind: string): string {
+  return `<div class="pcards">${cards.map((c) => `<button class="pcard${c.on ? ' on' : ''}${c.ok ? '' : ' off'}" data-card="${kind}:${c.key}" title="${c.name}${c.why ? `&#10;${c.why}` : ''}">
+    <span class="pc-img"><img alt="" draggable="false"><img alt="" class="pc-open" draggable="false"></span>
+    <b>${c.label}</b><small>${c.on ? `지금 · 폭 ${c.item.w}` : c.ok ? `폭 ${c.item.w}` : c.why!.split(' — ')[0]}</small></button>`).join('')}</div>`;
+}
+/** 카드 누르기 · 썸네일 채우기. 썸네일은 한 번에 하나씩 찍고(같은 장 · 폭 · 도어면 다시 찍지 않는다) 다 찍힌 것부터 보인다 */
+function bindCards(grid: Element | null, cards: Card[], it: Item, side?: 'L' | 'R') {
+  if (!grid) return;
+  const btns = grid.querySelectorAll<HTMLElement>('.pcard');
+  btns.forEach((b, i) => b.addEventListener('click', () => {
+    const c = cards[i];
+    if (c.on) { if (preview) { endPreview(false); pick(it); } return; }
+    if (!c.ok) { const n = b.closest('.pv-zone')?.querySelector('.ii-note') ?? $('#item-info').querySelector('.ii-edit-note'); if (n) { n.textContent = c.why!; n.classList.add('err'); } return; }
+    void startPreview(it, c.key, side);
+  }));
+  const base = preview?.base ?? current;
+  if (!base) return;
+  cards.forEach((c, i) => {
+    const im = btns[i]?.querySelectorAll('img'), box = btns[i]?.querySelector('.pc-img');
+    // 썸네일엔 하부 기능 표시(쿡탑 · 싱크)를 빼고 식세기 속만 — 쿡탑 표시가 있으면 섬 후드까지 붙어 장이 작게 찍혔다
+    const ti: ThumbItem = { key: c.item.key, level: c.item.level, w: c.item.w, ...(c.item.ov ? { ov: c.item.ov } : {}), ...(c.item.tag === 'dish' ? { tag: 'dish' as const } : {}) };
+    thumbPair(ti, base, d, cat, grade(), d.door).then(([cl, op]) => { im[0].src = cl; im[1].src = op; box?.classList.add('ready'); }, () => box?.classList.add('fail'));
+  });
+}
+/** 장 추가 카드 — 그쪽(side)에 넣을 수 있는 장. null 이면 닫기 */
+function showAddCards(box: HTMLElement, it: Item, side: 'L' | 'R' | null) {
+  addOpen = side ? { it, side } : null;
+  box.querySelectorAll<HTMLElement>('[data-add-open]').forEach((b) => b.classList.toggle('on', b.dataset.addOpen === side));
+  const host = box.querySelector<HTMLElement>('.pc-add');
+  if (!host) return;
+  if (!side) { host.innerHTML = ''; return; }
+  const cards = addCards(it, side);
+  host.innerHTML = `${cardGrid(cards, `add${side}`)}<div class="ii-note ii-add-note">${side === 'L' ? '왼쪽' : '오른쪽'}에 넣을 장 — 누르면 그 자리에 미리 보기(빈 칸이면 그 폭에 맞춰 메움)</div>`;
+  bindCards(host.querySelector('.pcards'), cards, it, side);
+  markPreview();
+}
+
+/* ───────── 미리보기 — 카드를 누르면 배치안 복사본에 바꿔 끼워 그 자리에 3D 로 ─────────
+ * 그 장 문만 열고 카메라를 그 장 앞으로. 「적용」이면 복사본이 지금 배치안(되돌리기 한 단계), 「취소」 · 다른 것 고르기 · Esc 면 원래 배치안 */
+let previewSeq = 0, flySeq = 0;
+async function startPreview(orig: Item, key: string, side?: 'L' | 'R') {
+  devact(`preview ${key}${side ?? ''}`);
+  const base = preview?.base ?? current;
+  if (!base) return;
+  if (!preview && commitTimer) { clearTimeout(commitTimer); commit(); }     // 미리보기 전 변경부터 쌓아 둔다
+  const t = onCopy(orig, (ci) => (side ? addBeside(ci, side, false, key) : swapItem(ci, key) ?? ci));
+  if (typeof t.r === 'string') { say(t.r); setTimeout(() => say(null), 2400); return; }
+  const cam: [THREE.Vector3, THREE.Vector3] = preview?.cam ?? [stage.camera.position.clone(), stage.controls.target.clone()];
+  preview = { base, c: t.c, orig, item: t.r, back: t.back, key, side, cam };
+  current = t.c;
+  stage.highlight(null);
+  plan.picked = t.r; plan.render(d, current);
+  markPreview();
+  const my = ++previewSeq;
+  await rebuildKitchen();
+  if (my !== previewSeq || !preview || !lastKitchen) return;
+  const obj = lastKitchen.items.find((x) => x.item === preview!.item)?.obj;
+  if (!obj) return;
+  // 선택 상자(파란 덮개)는 씌우지 않는다 — 열린 문 안쪽이 가렸다. 카메라를 그 장 앞으로 옮겨 어느 장인지 보인다
+  stage.highlight(null);
+  const ds = doorsOf(obj);
+  focusOn(obj, preview.item, ds);
+  openDoorsOf(ds, my);
+}
+/** 미리보기 끝 — apply 면 복사본이 지금 배치안, 아니면 원래 배치안. rebuild=false 는 곧 다시 그릴 때(자동 배치 · 되돌리기 · 안 바꾸기) */
+function endPreview(apply: boolean, rebuild = true) {
+  const p = preview;
+  if (!p) return null;
+  devact(`preview-end ${apply ? 'apply' : 'cancel'}`);
+  preview = null; previewSeq++;
+  markPreview();
+  flyCam(p.cam[0], p.cam[1]);
+  if (apply) {
+    const i = cands.indexOf(p.base);
+    if (i >= 0) cands[i] = p.c;
+    current = p.c;
+    // 그 장 문은 지금 문 상태로 — 폴딩 문은 원본 변수라 다시 계산
+    if (FOLD_KEYS.has(p.item.key)) void rebuildKitchen();
+    else { if (lastKitchen) setDoors(lastKitchen.doors, doorsT); stage.invalidate(true); scheduleCommit(); }
+  } else {
+    current = p.base;
+    plan.render(d, current);
+    if (rebuild) void rebuildKitchen();
+  }
+  return p;
+}
+/** 정보 창 — 미리 보는 카드 표시 · 적용 / 취소 줄. 미리보기 동안 다른 칸은 흐리게(누르지 못함) */
+function markPreview() {
+  const box = $('#item-info'), p = preview;
+  box.classList.toggle('previewing', !!p);
+  box.querySelectorAll('.pcard.pv').forEach((x) => x.classList.remove('pv'));
+  box.querySelector('.pv-bar')?.remove();
+  if (!p) return;
+  const card = box.querySelector<HTMLElement>(`[data-card="${p.side ? `add${p.side}` : 'swap'}:${p.key}"]`);
+  card?.classList.add('pv');
+  const bar = document.createElement('div');
+  bar.className = 'pv-bar';
+  bar.innerHTML = `<span>미리보기 · <b>${modK(p.key)?.label ?? p.key}</b> 폭 ${p.item.w}</span><button data-pv="ok">적용</button><button data-pv="no" class="plain">취소</button>`;
+  (card?.closest('.pcards') ?? box.querySelector('.pcards'))?.after(bar);
+  bar.scrollIntoView({ block: 'nearest' });     // 정보 창 아래쪽(장 추가 카드)에서 눌러도 적용 · 취소가 보이게
+  bar.querySelector('[data-pv="ok"]')!.addEventListener('click', () => { const q = endPreview(true); if (q) pick(q.item); });
+  bar.querySelector('[data-pv="no"]')!.addEventListener('click', () => { const q = endPreview(false); if (q) pick(q.orig); });
+}
+/** 그 장의 문 · 서랍 */
+function doorsOf(obj: THREE.Object3D): DoorPart[] {
+  const inObj = (o: THREE.Object3D | null) => { for (; o; o = o.parent) if (o === obj) return true; return false; };
+  return lastKitchen?.doors.filter((x) => inObj(x.pivot)) ?? [];
+}
+/** 그 장 문만 연다(0.6초) — 다른 장은 지금 문 상태 그대로 */
+function openDoorsOf(ds: DoorPart[], seq: number) {
+  if (!ds.length || doorsT >= 1) return;
+  const t0 = performance.now();
+  const step = (now: number) => {
+    if (seq !== previewSeq) return;
+    const k = Math.min(1, (now - t0) / 600);
+    setDoors(ds, k * k * (3 - 2 * k)); stage.invalidate(true);
+    if (k < 1) requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+}
+/** 3D 화면에서 가리지 않은 곳(정보 창 · 도구 단추 · 프롬프트 줄 밖) — 화면 좌표(NDC)의 가운데 · 반폭 */
+function viewWindow() {
+  const cv = $('#three').getBoundingClientRect(), info = $('#item-info'), tools = document.querySelector('.tools'), bar = $('#prompt-bar');
+  // 3D 화면에 실제로 겹친 것만 — 2D 보기에선 3D 가 왼쪽 아래 작은 창이라 정보 창 · 도구 단추와 안 겹친다
+  const over = (e: Element | null) => { if (!e || (e as HTMLElement).hidden) return null; const r = e.getBoundingClientRect(); return r.right > cv.left && r.left < cv.right && r.bottom > cv.top && r.top < cv.bottom ? r : null; };
+  let x0 = cv.left, x1 = cv.right, y1 = cv.bottom;
+  const y0 = cv.top, ri = over(info), rt = over(tools), rb = over(bar);
+  if (ri) x0 = Math.max(x0, ri.right + 8);
+  if (rt) x1 = Math.min(x1, rt.left - 8);
+  if (rb) y1 = Math.min(y1, rb.top - 8);
+  if (x1 - x0 < cv.width * 0.3 || y1 - y0 < cv.height * 0.3) return { cx: 0, cy: 0, hx: 1, hy: 1 };
+  const nx = (x: number) => ((x - cv.left) / cv.width) * 2 - 1, ny = (y: number) => 1 - ((y - cv.top) / cv.height) * 2;
+  return { cx: (nx(x0) + nx(x1)) / 2, cy: (ny(y0) + ny(y1)) / 2, hx: (nx(x1) - nx(x0)) / 2, hy: (ny(y0) - ny(y1)) / 2 };
+}
+/** 카메라를 범위 bb 의 정면으로 — n = 보는 사람 쪽(바닥에 평행), 가리지 않은 화면 88% 안에 들어오는 거리, els(도) 높이에서 내려다보며.
+ *  avoid 면 앞을 다른 장 · 아일랜드 · 식탁이 막을 때 더 높이서(skip = 그 물체 자신은 빼고 잰다). 늘 천장 아래로. 미리보기 · Z 키가 쓴다 */
+function frontView(bb: THREE.Box3, n: THREE.Vector3, els: number[], skip: THREE.Object3D | null, avoid = true) {
+  if (!lastKitchen) return;
+  // 광선 · 범위는 월드 행렬로 잰다 — 새로 지은 부엌은 문 충돌 검사(전부 연 상태)의 행렬이 남아 있어, 닫힌 옆 장 문에 열린 자리로 맞았다
+  lastKitchen.group.updateMatrixWorld(true);
+  const c = bb.getCenter(new THREE.Vector3()), size = bb.getSize(new THREE.Vector3()), ceil = d.room.h / 1000 - 0.15;
+  // 광선은 앞면에서 조금 나와서 쏜다 — 장 한가운데서 쏘면 바로 위 상판에 막혔다
+  const front = (size.x * Math.abs(n.x) + size.z * Math.abs(n.z)) / 2 + 0.05;
+  const corners = [0, 1, 2, 3, 4, 5, 6, 7].map((i) => new THREE.Vector3(i & 1 ? bb.max.x : bb.min.x, i & 2 ? bb.max.y : bb.min.y, i & 4 ? bb.max.z : bb.min.z));
+  const win = viewWindow(), tc = stage.camera.clone();
+  const tv = Math.tan(THREE.MathUtils.degToRad(tc.fov) / 2), th = tv * tc.aspect;
+  /** 카메라가 pos 일 때 바라볼 점 — 가운데(c)가 가리지 않은 화면 가운데에 오게 옆 · 위로 비킨 점 */
+  const lookAt = (pos: THREE.Vector3) => {
+    const fwd = c.clone().sub(pos), D = fwd.length();
+    const right = fwd.clone().cross(new THREE.Vector3(0, 1, 0)).normalize(), up = right.clone().cross(fwd).normalize();
+    return c.clone().addScaledVector(right, -win.cx * D * th).addScaledVector(up, -win.cy * D * tv);
+  };
+  /** at 에서 dir 로 얼마나 물러나야 꼭짓점이 가리지 않은 화면의 88% 안에 드는지 */
+  const fitS = (at: THREE.Vector3, dir: THREE.Vector3) => {
+    let s = 1.5;
+    for (let k = 0; k < 6; k++) {
+      tc.position.copy(at).addScaledVector(dir, s); tc.lookAt(lookAt(tc.position)); tc.updateMatrixWorld();
+      const m = Math.max(...corners.map((p) => { const v = p.clone().project(tc); return Math.max(Math.abs(v.x - win.cx) / (win.hx * 0.88), Math.abs(v.y - win.cy) / (win.hy * 0.88)); }));
+      s = Math.max(0.3, (s + front) * m - front);
+    }
+    return s;
+  };
+  const shown = (o: THREE.Object3D | null) => { for (; o; o = o.parent) if (!o.visible) return false; return true; };
+  const inSkip = (o: THREE.Object3D | null) => { for (; o; o = o.parent) if (o === skip) return true; return false; };
+  const ray = new THREE.Raycaster();
+  let best: { pos: THREE.Vector3; ok: number } | null = null;
+  for (const el of els) {
+    const e = THREE.MathUtils.degToRad(el), dir = n.clone().multiplyScalar(Math.cos(e)).setY(Math.sin(e));
+    const at = c.clone().addScaledVector(n, front), s = fitS(at, dir);
+    ray.set(at, dir); ray.far = s + 0.2;
+    const hit = avoid ? ray.intersectObject(lastKitchen.group, true).find((h) => (h.object as THREE.Mesh).isMesh && !inSkip(h.object) && shown(h.object)) : undefined;
+    const can = Math.min(s, hit ? hit.distance - 0.2 : Infinity, (ceil - at.y) / Math.max(0.05, dir.y));
+    const ok = can / s;   // 1 이면 다 들어옴
+    if (!best || ok > best.ok) best = { pos: at.clone().addScaledVector(dir, Math.max(0.3, can)), ok };
+    if (ok >= 0.95) break;
+  }
+  if (best) flyCam(best.pos, lookAt(best.pos));
+}
+/** 미리보기 — 문을 다 연 범위로, 하부장은 조금 내려다보며(서랍 속), 상부장 · 키큰장은 거의 수평 */
+function focusOn(obj: THREE.Object3D, it: Item, ds: DoorPart[]) {
+  if (!lastKitchen) return;
+  setDoors(ds, 1);
+  lastKitchen.group.updateMatrixWorld(true);
+  const bb = new THREE.Box3().setFromObject(obj);
+  setDoors(ds, doorsT);
+  frontView(bb, new THREE.Vector3(it.frame.n[0], 0, it.frame.n[1]).normalize(), it.level === 'base' ? [28, 42, 56, 70] : [6, 18, 30], obj);
+}
+/** 카메라 옮기기(0.5초, 부드럽게) */
+function flyCam(pos: THREE.Vector3, target: THREE.Vector3, ms = 500) {
+  const my = ++flySeq, p0 = stage.camera.position.clone(), t0 = stage.controls.target.clone(), s0 = performance.now();
+  const step = (now: number) => {
+    if (my !== flySeq) return;
+    const k = Math.min(1, (now - s0) / ms), e = k * k * (3 - 2 * k);
+    stage.camera.position.lerpVectors(p0, pos, e); stage.controls.target.lerpVectors(t0, target, e);
+    stage.controls.update(); stage.invalidate();
+    if (k < 1) requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+}
+/* ───────── Z — 고른 것을 정면에서 화면에 맞춰 보기(사용자 2026-11-09 「Z 키 누르면 화면에 맞춰서 정면으로 — 지금은 줌인일 뿐」) ─────────
+ * 3D 는 카메라를 그것의 정면(장 · 쿡탑 = 문 쪽, 아일랜드 = 아일랜드 정면, 식탁 = 앞, 창 · 문 · 벽 = 방 안쪽에서)으로 옮겨 화면에 맞추고,
+ * 2D 보기는 평면도를 그 자리로 키운다. 고른 것 = 선택 표시 상자(미리보기 중이면 미리 보는 장) */
+function selectionView(): { box: THREE.Box3; n: THREE.Vector3; avoid: boolean; skip: THREE.Object3D | null } | null {
+  const N = (v: number[]) => new THREE.Vector3(v[0], 0, v[1]).normalize();
+  const objOf = (it: Item) => lastKitchen?.items.find((x) => x.item === it)?.obj ?? null;
+  if (preview) { const o = objOf(preview.item); if (o) return { box: new THREE.Box3().setFromObject(o), n: N(preview.item.frame.n), avoid: true, skip: o }; }
+  const box = stage.selBounds?.clone();
+  if (!box || box.isEmpty()) return null;
+  if (picked) return { box, n: N(picked.frame.n), avoid: true, skip: objOf(picked) };
+  const hob = hobSel ? current?.items.find((x) => x.tag === 'hob') : undefined;
+  if (hob) return { box, n: N(hob.frame.n), avoid: true, skip: objOf(hob) };
+  if (islandSel && current?.island) return { box, n: N(current.island.frame.n), avoid: true, skip: null };
+  const dh = diningSel ? diningHolder() : null;
+  if (dh) return { box, n: new THREE.Vector3(Math.sin(dh.rotation.y), 0, Math.cos(dh.rotation.y)), avoid: true, skip: dh };
+  // 창 · 문 · 벽은 방 안쪽에서 — 그 앞의 장은 가림으로 보지 않는다(벽 앞엔 늘 장이 있다)
+  const op = selectedOp ? d.openings.find((x) => x.id === selectedOp) : undefined;
+  if (op) return { box, n: N(wallFrame(d.room, op.wall).n), avoid: false, skip: null };
+  if (plan.pickedWall != null && plan.pickedWall <= 3) return { box, n: N(wallFrame(d.room, plan.pickedWall as WallId).n), avoid: false, skip: null };
+  // 그 밖(거실 벽 등) — 지금 보는 방향 그대로
+  const v = stage.camera.position.clone().sub(stage.controls.target).setY(0);
+  return { box, n: v.lengthSq() > 1e-6 ? v.normalize() : new THREE.Vector3(0, 0, 1), avoid: false, skip: null };
+}
+function zoomToSelection() {
+  devact('Z');
+  const v = selectionView();
+  if (!v) { say('고른 것이 없습니다 — 장 · 벽 · 창 등을 고른 뒤 Z'); setTimeout(() => say(null), 1800); return; }
+  const b = v.box;
+  if ($('#viewport').classList.contains('v2d')) { plan.focusBox(b.min.x * 1000, b.min.z * 1000, b.max.x * 1000, b.max.z * 1000); return; }
+  // 정면 높이 — 하부 높이는 살짝 내려다보며(앞이 막히면 더 높이), 상부장 · 키큰장 위쪽은 거의 수평, 벽 · 창은 수평에 가깝게
+  const cy = b.getCenter(new THREE.Vector3()).y;
+  frontView(b, v.n, cy > 1.2 ? [5, 15, 25] : v.avoid ? [15, 30, 45, 60] : [8], v.skip, v.avoid);
+}
+// 한글 입력 상태에서도 되게 키 자리(code)로 본다. Ctrl+Z(되돌리기)와 글 입력 칸은 건드리지 않는다
+window.addEventListener('keydown', (e) => {
+  if (e.code !== 'KeyZ' || e.ctrlKey || e.metaKey || e.altKey || e.repeat) return;
+  const t = e.target as HTMLElement;
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
+  e.preventDefault();
+  zoomToSelection();
+});
 /** 옆 빈 공간 — it 의 side 쪽, 같은 벽에서 그 층 높이를 차지하는 것이 없는 구간(문 · 창 · 옆 벽 코너 장 깊이 제외).
  *  바로 옆 EP 와 빈 칸 건너 맞은편 EP(빈 자리로 둔 칸을 막던 것)는 치울 수 있는 것으로 본다. 아일랜드는 길이가 정해져 있어 없음.
  *  장 배치 길이(runLen)로 줄을 짧게 잡았어도 벽에 공간이 있으면 쓴다(사용자 지시 2026-11-06) */
 function freeBeside(it: Item, side: 'L' | 'R'): { t0: number; t1: number; eps: Item[]; to: Item | null; closed: boolean } | null {
   if (!current || it.wall == null) return null;
   const w = it.wall, L = wallLength(d.room, w), lv = it.level;
-  const zone = (x: Item) => (lv === 'tall' ? x.level === 'base' || x.level === 'wall' || x.level === 'tall' : x.level === lv || x.level === 'tall');
+  const zone = rowZone(lv);
   const row = current.items.filter((x) => x !== it && x.wall === w && zone(x)).sort((a, b) => a.t - b.t);
-  const blk = wallBlocks(d.openings, w);
-  // 끝을 막는 것 — closed = 그 끝에 닿는 장은 EP 가 필요 없음(벽 · 날개벽 · 옆 벽 코너 장), 문 · 창은 드러난 끝(EP)
-  const stops: { a: number; b: number; closed: boolean }[] = (lv === 'base' ? blk.base : lv === 'wall' ? blk.upper : [...blk.base, ...blk.upper]).map(([a, b]) => ({ a, b, closed: false }));
-  // 벽 끝 — 트인 쪽(거실)이면 날개벽이 있을 때만 막힘
-  stops.push({ a: -1e9, b: 0, closed: prevWall(w) !== d.openWall || d.wing.b >= 300 }, { a: L, b: 1e9, closed: nextWall(w) !== d.openWall || d.wing.a >= 300 });
-  // 옆 벽 줄이 코너를 차지 — 앞 벽의 끝 · 다음 벽의 시작에 장이 있으면 그 깊이만큼(그 장 옆면에 붙는다)
-  const depthOf = (x: Item) => (x.level === 'wall' ? WALL_D : x.key.startsWith('corner') ? CORNER_D : x.level === 'tall' ? 720 : BASE_D);
-  for (const [ow, atStart] of [[prevWall(w), true], [nextWall(w), false]] as const) {
-    const OL = wallLength(d.room, ow);
-    const near = current.items.filter((x) => x.wall === ow && zone(x) && (atStart ? x.t + x.w >= OL - 1 : x.t <= 1));
-    if (near.length) { const dep = Math.max(...near.map(depthOf)); stops.push(atStart ? { a: -1e9, b: dep, closed: true } : { a: L - dep, b: 1e9, closed: true }); }
-  }
+  const stops = rowStops(it);
   const sameEp = (x: Item) => x.tag === 'ep' && (x.level === lv || (lv === 'tall' && x.level !== 'wall'));
   if (side === 'R') {
     const c = it.t + it.w, eps: Item[] = [];
@@ -1515,49 +1889,127 @@ function freeBeside(it: Item, side: 'L' | 'R'): { t0: number; t1: number; eps: I
   if (to && sameEp(to)) { const before = rest.find((x) => x !== to && Math.abs(x.t + x.w - to!.t) < 1); if (before) { eps.push(to); start = before.t + before.w; to = before; } else to = null; }
   return { t0: start, t1: c, eps, to, closed: !to && Math.abs(start - hit.at) < 1 && hit.closed };
 }
-/** 옆에 새 장 · 휠라. 장은 옆 빈 공간이 있으면 그 자리에(옆 장을 줄이지 않는다) — 빈 칸이면 그 폭에 맞춰 메워 양쪽을 잇는다.
- *  빈 공간이 없으면 폭 0 으로 끼운 뒤 원하는 폭으로 늘린다(같은 줄 장들이 그만큼 줄어든다). 실패하면 이유 문자열 */
-function addBeside(it: Item, side: 'L' | 'R', fill = false): Item | string {
+/** 그 층 줄을 막는 장 — 하부 줄은 하부 · 키큰, 상부 줄은 상부 · 키큰, 키큰 줄은 전부 */
+const rowZone = (lv: Item['level']) => (x: Item) => (lv === 'tall' ? x.level === 'base' || x.level === 'wall' || x.level === 'tall' : x.level === lv || x.level === 'tall');
+/** 줄 끝을 막는 것 — 문 · 창(드러난 끝, EP), 벽 끝(트인 쪽 거실은 날개벽이 있을 때만), 옆 벽 줄이 차지한 코너(그 장 깊이까지 · 닫힌 끝).
+ *  코너는 옆 벽 장이 이 줄 깊이 안에 걸치면 막힌다 — 자동 배치는 코너장을 코너에서 100 띄워 놓는데(cornerL t 100 · cornerR 끝 L−100),
+ *  예전엔 코너에 딱 붙은 장만 봐서 코너장 앞을 빈 공간으로 알고 장을 코너장 쪽으로 키웠다(사용자 2026-11-09 「코너장 쪽으로 커지면 안 돼」) */
+function rowStops(it: Item): { a: number; b: number; closed: boolean; corner?: boolean }[] {
+  const w = it.wall!, L = wallLength(d.room, w), lv = it.level, zone = rowZone(lv);
+  const blk = wallBlocks(d.openings, w);
+  const stops: { a: number; b: number; closed: boolean; corner?: boolean }[] = (lv === 'base' ? blk.base : lv === 'wall' ? blk.upper : [...blk.base, ...blk.upper]).map(([a, b]) => ({ a, b, closed: false }));
+  stops.push({ a: -1e9, b: 0, closed: prevWall(w) !== d.openWall || d.wing.b >= 300 }, { a: L, b: 1e9, closed: nextWall(w) !== d.openWall || d.wing.a >= 300 });
+  const depthOf = (x: Item) => (x.level === 'wall' ? WALL_D : x.key.startsWith('corner') ? CORNER_D : x.level === 'tall' ? 720 : BASE_D);
+  const band = lv === 'wall' ? WALL_D : lv === 'tall' ? 720 : BASE_D;
+  for (const [ow, atStart] of [[prevWall(w), true], [nextWall(w), false]] as const) {
+    const OL = wallLength(d.room, ow);
+    const near = current!.items.filter((x) => x.wall === ow && zone(x) && (atStart ? x.t + x.w > OL - band : x.t < band));
+    if (near.length) { const dep = Math.max(...near.map(depthOf)); stops.push(atStart ? { a: -1e9, b: dep, closed: true, corner: true } : { a: L - dep, b: 1e9, closed: true, corner: true }); }
+  }
+  return stops;
+}
+/** 줄 끝이 옆 벽 코너 자리 안으로 들어간 폭 — 예전 버그로 코너장 쪽으로 커진 줄. 줄일 때 이 끝부터 당긴다 */
+function cornerOverrun(edge: Item, side: 'L' | 'R'): number {
+  if (edge.wall == null) return 0;
+  const c = side === 'R' ? edge.t + edge.w : edge.t;
+  let o = 0;
+  // 그 끝이 코너 자리 안에 있을 때만 — 반대쪽 끝 코너(벽 끝까지 이어진 구간)를 세면 줄 전체를 당겼다
+  for (const s of rowStops(edge)) if (s.corner) o = Math.max(o, side === 'R' ? (s.a < c && c <= s.b ? c - s.a : 0) : (s.a <= c && c < s.b ? s.b - c : 0));
+  return Math.min(o, edge.w);
+}
+/** EP — 그 층 EP 키(상부 epW · 키큰 epT · 하부 epB). 비규격 값은 같은 키 EP 를 따른다(없으면 상부는 도어 아랫선 ~ 천장 · 깊이 343) */
+function epItem(ref: Item, t: number): Item {
+  const key = ref.level === 'wall' ? 'epW' : ref.level === 'tall' ? 'epT' : 'epB';
+  const ov = current?.items.find((x) => x.key === key && x.ov)?.ov ?? (key === 'epW' ? { STD_YN: 'true', NSTD_H: String(d.room.h - upperBottomOf(d.room)), NSTD_D: '343' } : undefined);
+  return { key, level: ref.level, frame: ref.frame, t, w: 20, wall: ref.wall, tag: 'ep', ...(ov ? { ov: { ...ov } } : {}) };
+}
+/** 줄 끝 옆 빈 공간 쓰기 — edge(줄 끝 장) 의 side 쪽 빈 공간(빼서 비운 자리 · 짧게 잡은 줄 끝)에서 want 까지.
+ *  일부만 쓰면 가까운 EP 가 새 줄 끝으로 따라가고, 남는 빈 자리에 양쪽 EP 자리(각 20)를 둔다. 다 쓰면 맞은편 장 · 막힌 끝(벽 · 옆 벽 코너 장)과
+ *  이어 EP 를 치운다. 맞은편이 열린 끝(창 · 문 · 트인 쪽)이면 끝 EP 자리 20 을 남긴다. want 를 넘지 않는다. apply 는 줄 끝을 옮긴 뒤 부른다 */
+function useFree(edge: Item, side: 'L' | 'R', want: number): { take: number; apply: () => void } | null {
+  const fr = want > 0 ? freeBeside(edge, side) : null;
+  if (!fr) return null;
+  const span = fr.t1 - fr.t0, at0 = side === 'R' ? fr.t0 : fr.t1;
+  const nearEp = fr.eps.find((x) => (side === 'R' ? Math.abs(x.t - at0) < 1 : Math.abs(x.t + x.w - at0) < 1));
+  const farEp = fr.eps.find((x) => x !== nearEp);
+  const join = (!!fr.to || fr.closed) && want >= span;
+  const take = join ? span : Math.min(want, span - 20 - (farEp ? 20 : 0));
+  if (take <= 0) return null;
+  return {
+    take, apply: () => {
+      if (!current) return;
+      if (join) { current.items = current.items.filter((x) => !fr.eps.includes(x)); return; }
+      const t = side === 'R' ? at0 + take : at0 - take - 20;
+      if (nearEp) nearEp.t = t; else current.items.push(epItem(edge, t));
+    },
+  };
+}
+/** 빈 공간 쪽으로 옮기기 — 옮기는 쪽 줄 끝 옆이 빈 공간이면 그 끝까지의 장들을 폭 그대로 밀어 넣는다. 떠난 자리는 뒤 장들이 늘어나 메우고
+ *  (키울 때 순서), 뒤에 장이 없으면 빈 자리로 둔다 — 끝에 붙은 EP 는 따라오고, 벽 · 코너 장에 붙어 있던 끝이면 EP 를 댄다(20 이상 옮길 때).
+ *  옮긴 폭(빈 공간 · 뒤 장이 받는 데까지), 빈 공간이 없으면 0 */
+function slideFree(c: Candidate, grp: Item[], it: Item, delta: number): number {
+  const k = grp.indexOf(it), dir = Math.sign(delta);
+  const lead = dir > 0 ? grp.slice(k) : grp.slice(0, k + 1);
+  const trail = dir > 0 ? grp.slice(0, k) : grp.slice(k + 1);
+  const cap = trail.length ? trail.reduce((s, x) => { const r = widthRange(x); return s + (r ? Math.max(0, r[1] - x.w) : 0); }, 0) : Infinity;
+  const back = dir > 0 ? it.t : it.t + it.w;
+  const tailEp = trail.length ? undefined : c.items.find((x) => x.tag === 'ep' && x.wall === it.wall && x.level === it.level && Math.abs((dir > 0 ? x.t + x.w : x.t) - back) < 1);
+  const u = useFree(dir > 0 ? grp[grp.length - 1] : grp[0], dir > 0 ? 'R' : 'L', Math.min(Math.abs(delta), cap));
+  if (!u || (!trail.length && !tailEp && u.take < 20)) return 0;
+  const m = u.take;
+  let left = m;
+  for (const x of byPriority(trail.slice().sort((a, b) => Math.abs(grp.indexOf(a) - k) - Math.abs(grp.indexOf(b) - k)), true)) {
+    if (!left) break;
+    const r = widthRange(x);
+    if (!r) continue;
+    const nw = Math.min(r[1], x.w + left);
+    if (nw > x.w) { left -= nw - x.w; setWidth(x, nw); }
+  }
+  u.apply();
+  for (const x of lead) x.t += dir * m;
+  if (trail.length) {
+    // 뒤 장들 — 줄의 먼 끝은 그대로, 늘어난 만큼 옮긴 장 쪽으로
+    let t = dir > 0 ? grp[0].t : it.t + it.w;
+    for (const x of trail) { x.t = t; t += x.w; }
+  } else if (tailEp) tailEp.t += dir * m;
+  else c.items.push(epItem(it, dir > 0 ? it.t - 20 : it.t + it.w));
+  return m;
+}
+/** 옆에 새 장 · 휠라. 장은 옆 빈 공간이 있으면 그 자리에(옆 장을 줄이지 않는다) — 빈 칸 · 막힌 끝까지 한 장으로 메울 수 있으면 그 폭으로 메워 잇는다.
+ *  빈 공간이 없으면 폭 0 으로 끼운 뒤 원하는 폭으로 늘린다(같은 줄 장들이 그만큼 줄어든다). key = 넣을 장(카드), 없으면 1도어 · 2도어 중 폭에 맞는 것.
+ *  실패하면 이유 문자열 */
+function addBeside(it: Item, side: 'L' | 'R', fill = false, key?: string): Item | string {
   if (!current) return '배치안이 없습니다';
-  const up = it.level === 'wall';
-  const has = (k: string) => cat.modules.some((m) => m.key === k && (m.series === grade().series || m.series === '*'));
-  const [k1, k2, w0] = ADD_KEYS[it.level] ?? ADD_KEYS.base;
+  const [k1, k2] = ADD_KEYS[it.level] ?? ADD_KEYS.base;
+  const keys = (key ? [key] : [k1, k2]).filter((k) => modK(k));
+  const tagOf = (k: string) => (k === 'dish' ? { tag: 'dish' as const } : {});
   if (!fill) {
+    if (!keys.length) return '이 그레이드에 넣을 장이 없습니다';
     const fr = freeBeside(it, side);
-    const range = (k: string) => { const m = cat.modules.find((x) => x.key === k && (x.series === grade().series || x.series === '*')); return m ? (widthRange({ key: k, level: it.level, frame: it.frame, t: 0, w: 0 }) ?? null) : null; };
-    const r1 = range(k1), r2 = has(k2) ? range(k2) : null;
-    if (fr && r1) {
-      const room = fr.t1 - fr.t0;
-      // 빈 칸을 다 메우면 양쪽이 이어진다(EP 를 치운다) — 한 장으로 메울 수 있는 폭까지. 아니면 기본 폭(남는 쪽 끝엔 EP)
-      const maxW = Math.max(r1[1], r2?.[1] ?? 0);
-      const fits = room <= maxW && room >= r1[0];
-      // 빈 칸이면 양쪽 장을 잇고, 막힌 끝(벽 · 날개벽 · 옆 벽 코너 장)까지면 거기 붙인다 — 둘 다 끝 EP 가 필요 없다
-      const fills = !!fr.to && fits, toEnd = !fr.to && fr.closed && fits;
-      const needEp = !fills && !toEnd;
-      const want = fills || toEnd ? room : Math.min(w0, room - 20, maxW);
-      if (want >= r1[0]) {
-        const key = want <= r1[1] ? k1 : k2;
-        const t = side === 'R' ? fr.t0 : fr.t1 - want;
-        const nt: Item = { key, level: it.level, frame: it.frame, t, w: want, wall: it.wall };
-        current.items = current.items.filter((x) => !fr.eps.includes(x));
+    if (fr) {
+      const span = fr.t1 - fr.t0, at0 = side === 'R' ? fr.t0 : fr.t1;
+      const nearEp = fr.eps.find((x) => (side === 'R' ? Math.abs(x.t - at0) < 1 : Math.abs(x.t + x.w - at0) < 1));
+      const farEp = fr.eps.find((x) => x !== nearEp);
+      // 빈 칸 · 막힌 끝(벽 · 날개벽 · 옆 벽 코너 장)까지 한 장으로 메울 수 있으면 메워 잇는다(EP 를 치움).
+      // 아니면 기본 폭(모자라면 남는 자리에 맞춘 폭) — 새 끝에 EP, 맞은편 장 끝 EP 는 그대로(예전엔 맞은편 EP 까지 치워 그 장 옆면이 드러났다)
+      let k = fr.to || fr.closed ? keys.find((x) => fitsW(modK(x), span)) : undefined, w = k ? span : 0;
+      if (!k) for (const x of keys) { w = addW(modK(x)!, it.level, span - 20 - (farEp ? 20 : 0)); if (w) { k = x; break; } }
+      const u = k ? useFree(it, side, w) : null;
+      if (k && u && u.take === w) {
+        const nt: Item = { key: k, level: it.level, frame: it.frame, t: side === 'R' ? fr.t0 : fr.t1 - w, w, wall: it.wall, ...tagOf(k) };
+        u.apply();
         current.items.push(nt);
-        setWidth(nt, want);
-        // 끝이 드러나면 EP — 원래 그 끝을 막던 EP 를 새 장 끝으로
-        if (!fills && needEp) {
-          const epKey = it.level === 'wall' ? 'epW' : it.level === 'tall' ? 'epT' : 'epB';
-          const ref = fr.eps[0] ?? current.items.find((x) => x.key === epKey && x.ov);
-          const ov = ref?.ov ? { ...ref.ov } : undefined;
-          current.items.push({ key: ref?.key ?? epKey, level: ref?.level ?? it.level, frame: it.frame, t: side === 'R' ? t + want : t - 20, w: 20, wall: it.wall, tag: 'ep', ...(ov ? { ov } : {}) });
-        }
+        setWidth(nt, w);
         fixPoints(current);
         return nt;
       }
     }
   }
-  const key = fill ? (up ? 'wfill50' : 'bfill50') : k1, w = fill ? 50 : w0;
-  if (!has(key)) return `이 그레이드에 넣을 ${fill ? '휠라가' : '장이'} 없습니다`;
+  const k = fill ? (it.level === 'wall' ? 'wfill50' : 'bfill50') : keys[0], m = modK(k);
+  if (!m) return `이 그레이드에 넣을 ${fill ? '휠라가' : '장이'} 없습니다`;
+  const w = fill ? 50 : addW(m, it.level, Infinity);
   // 줄 정렬에서 기준 장의 바로 왼쪽 · 오른쪽에 오도록 t 를 아주 조금 비켜 끼운다(다시 이을 때 정수로 맞춰진다)
-  const nt: Item = { key, level: it.level, frame: it.frame, t: side === 'L' ? it.t - 0.001 : it.t + it.w - 0.001, w: 0, wall: it.wall };
+  const nt: Item = { key: k, level: it.level, frame: it.frame, t: side === 'L' ? it.t - 0.001 : it.t + it.w - 0.001, w: 0, wall: it.wall, ...tagOf(k) };
   current.items.push(nt);
   const err = resizeItem(nt, w);
   if (err) {
@@ -1597,7 +2049,10 @@ function swapItem(it: Item, key: string): string | null {
   const nm = cat.modules.find((m) => m.key === key && (m.series === grade().series || m.series === '*'));
   if (!nm) return '이 그레이드에는 없는 장입니다';
   const old = { key: it.key, tag: it.tag, ov: it.ov, robot: it.robot };
+  // 비규격 높이 · 깊이(창 위 낮은 상부장 등)는 바꾼 장도 그대로 — 예전엔 다 지워 창을 덮는 원래 높이로 돌아갔다
+  const keepHD = Object.fromEntries(Object.entries(it.ov ?? {}).filter(([k]) => k === 'NSTD_H' || k === 'NSTD_D'));
   it.key = key; delete it.ov;
+  if (Object.keys(keepHD).length) it.ov = keepHD;
   if (key === 'dish') it.tag = 'dish'; else if (old.tag === 'dish') delete it.tag;
   if (/fill/.test(key)) delete it.robot;     // 휠라엔 로봇청소기 자리가 없다
   if (fitsW(nm, it.w)) { setWidth(it, it.w); return null; }
@@ -1623,6 +2078,26 @@ function resizeItem(it: Item, w: number): string | null {
   const near = group.filter((x) => x !== it).sort((a, b) => Math.abs(group.indexOf(a) - k) - Math.abs(group.indexOf(b) - k));
   const plan = new Map<Item, number>();
   let rem = -delta;
+  // 키울 때는 줄 끝 옆 빈 공간(빼서 비운 자리 · 짧게 잡은 줄 끝)을 먼저 쓴다 — 가까운 끝부터, 옆 장은 그다음에 줄인다
+  //   (사용자 2026-11-09 「빈 공간 있으면 늘어나게」 — 예전엔 빈 자리 옆 장을 늘리면 「옆 장이 줄어들 수 있는 폭이 없습니다」)
+  const frees: (() => void)[] = [];
+  let shiftL = 0;
+  if (delta > 0 && it.wall != null) {
+    for (const side of (k <= group.length - 1 - k ? ['L', 'R'] : ['R', 'L']) as ('L' | 'R')[]) {
+      const u = rem < 0 ? useFree(side === 'L' ? group[0] : group[group.length - 1], side, -rem) : null;
+      if (!u) continue;
+      rem += u.take; frees.push(u.apply);
+      if (side === 'L') shiftL = u.take;
+    }
+  }
+  // 줄일 때 — 남는 폭은 먼저 옆 벽 코너 자리에 들어간 줄 끝을 당기는 데 쓴다(예전 버그로 코너장 쪽으로 커진 줄이 제자리로)
+  const pull = { L: 0, R: 0 };
+  if (delta < 0 && it.wall != null) {
+    for (const s of ['L', 'R'] as const) {
+      const p = Math.min(rem, cornerOverrun(s === 'L' ? group[0] : group[group.length - 1], s));
+      if (p > 0) { pull[s] += p; rem -= p; }
+    }
+  }
   // 옆 장들이 줄 때는 휠라 → 여닫이 → 서랍 → 식세 · 싱크 · 쿡탑장, 커질 때는 그 역방향(휠라 마지막)
   for (const x of byPriority(near, rem > 0)) {
     if (!rem) break;
@@ -1645,15 +2120,39 @@ function resizeItem(it: Item, w: number): string | null {
       rem = 0;
     }
   }
+  // 줄일 때 옆 장이 다 못 받으면 — 줄 끝을 당겨 빈 자리로 둔다(사용자 2026-11-09 「1100 에서 700 으로 줄이는데 오류」).
+  // 당기는 쪽 장들은 줄인 장 쪽으로 옮겨지므로 후드 · 싱크 · 쿡탑장(위 · 아래 기기, 배관)이 없는 쪽만 — 드러난 끝(EP)이 먼저, 그다음 옮길 장이 적은 쪽.
+  // EP 는 따라오고, 벽 · 키큰장에 닿았던 끝은 빈 자리에 장 끝 EP(그래서 20 이상일 때만). 양쪽 다 안 되면 예전처럼 막는다
+  const sameEp = (x: Item) => x.tag === 'ep' && x.level === it.level && x.wall === it.wall && x.frame === it.frame;
+  const epAt = { L: current.items.find((x) => sameEp(x) && Math.abs(x.t + x.w - group[0].t) < 1), R: current.items.find((x) => sameEp(x) && Math.abs(x.t - (group[group.length - 1].t + group[group.length - 1].w)) < 1) };
+  if (rem > 0 && delta < 0 && it.wall != null) {
+    const moves = { L: group.slice(0, k), R: group.slice(k + 1) };
+    const anchored = (x: Item) => x.key === 'hood' || x.tag === 'sink' || x.tag === 'hob';
+    const sides = (['L', 'R'] as const).filter((s) => !moves[s].some(anchored) && (epAt[s] || rem >= 20))
+      .sort((a, b) => (Number(!epAt[a]) - Number(!epAt[b])) || moves[a].length - moves[b].length);
+    if (sides.length) { pull[sides[0]] += rem; rem = 0; }
+  }
   if (rem) return `옆 장이 ${delta > 0 ? '줄어들' : '늘어날'} 수 있는 폭이 없습니다 — 다른 폭을 고르세요`;
+  const start0 = group[0].t, end0 = group[group.length - 1].t + group[group.length - 1].w;
   setWidth(it, w);
   for (const [x, nw] of plan) setWidth(x, nw);
+  for (const f of frees) f();
   const gone = [...plan].filter(([x, nw]) => /fill/.test(x.key) && nw < 10).map(([x]) => x);
   current.items = current.items.filter((x) => !gone.includes(x));
   let seq = group.filter((x) => !gone.includes(x));
   if (add) { current.items.push(add); seq = (add as Item & { _atStart?: boolean })._atStart ? [add, ...seq] : [...seq, add]; }
-  let t = group[0].t;
+  let t = group[0].t - shiftL + pull.L;
   for (const g of seq) { g.t = t; t += g.w; }
+  // 당긴 끝 — 막힌 자리(옆 벽 코너장 · 벽)에 닿으면 EP 없이(코너 쪽으로 커질 때 따라 들어간 EP 는 치운다),
+  // 아니면 그 끝 EP 가 따라오고 EP 가 없던 끝(벽 · 키큰장에 닿았던 끝)은 드러난 장 끝에 EP
+  const stops = pull.L || pull.R ? rowStops(it) : [];
+  for (const s of ['L', 'R'] as const) {
+    if (!pull[s]) continue;
+    const at = s === 'R' ? end0 - pull.R : start0 + pull.L, ep = epAt[s];
+    if (stops.some((x) => x.closed && Math.abs((s === 'R' ? x.a : x.b) - at) < 1)) { if (ep) current.items = current.items.filter((x) => x !== ep); }
+    else if (ep) ep.t = s === 'R' ? at : at - 20;
+    else if (pull[s] >= 20) current.items.push(epItem(s === 'R' ? group[group.length - 1] : group[0], s === 'R' ? at : at - 20));
+  }
   // 싱크 · 쿡탑 기호 자리 (위에 얹힌 후드 등은 자동 배치를 다시 하면 맞춰진다)
   fixPoints(current);
   return null;
@@ -1932,9 +2431,11 @@ stage.onPickItem = (it) => pick((it as Item) ?? null);
 plan.onPickItem = (it) => pick(it);
 
 /* ───────── 화면 도구 ───────── */
+// 시점 — 위에서 · 정면. 켜진 시점을 다시 누르면 기본 3D 시점(예전 「3D」 단추 자리는 2D · 3D 전환이 됐다)
 document.querySelectorAll<HTMLElement>('[data-view]').forEach((b) => b.addEventListener('click', () => {
-  document.querySelectorAll('[data-view]').forEach((x) => x.classList.toggle('on', x === b));
-  stage.view(b.dataset.view as ViewKind, d);
+  const kind = (b.classList.contains('on') ? 'persp' : b.dataset.view) as ViewKind;
+  document.querySelectorAll('[data-view]').forEach((x) => x.classList.toggle('on', (x as HTMLElement).dataset.view === kind));
+  stage.view(kind, d);
 }));
 // 문 열기 — 여닫이 · 플랩 · 서랍 · 식세 전부 (다시 누르면 닫힘). 다시 만들어도 열린 상태 유지
 let doorsT = 0, doorsTo = 0, doorsAt = 0;
@@ -2070,10 +2571,9 @@ const POST_CTLS: PostCtl[] = [
   { kind: 'range', key: 'contrast', label: '대비', min: 0.5, max: 1.5, step: 0.01 },
   { kind: 'range', key: 'saturation', label: '채도', min: 0, max: 2, step: 0.01 },
   { kind: 'range', key: 'vignette', label: '비네팅', min: 0, max: 1, step: 0.01 },
-  { kind: 'grp', label: '화면 반사 · 그림자', note: 'SSR · SSS — 실사 메뉴 「④ 실시간 고품질」이 함께 켠다(무겁다)' },
+  { kind: 'grp', label: '화면 반사', note: 'SSR — 실사 메뉴 「④ 실시간 고품질」이 함께 켠다(무겁다)' },
   { kind: 'check', key: 'ssr', label: '화면 반사 (SSR)' },
   { kind: 'range', key: 'ssrIntensity', label: '반사 세기', min: 0, max: 2, step: 0.05 },
-  { kind: 'check', key: 'sss', label: '접촉 그림자 (SSS · 햇빛)' },
   { kind: 'grp', label: '바닥 반사', note: '바닥에 방이 거울처럼 비친다 — 비스듬히 볼수록 진하게. 0 이면 끔(방을 한 번 더 그려 무겁다)' },
   { kind: 'range', key: 'floorRefl', label: '세기', min: 0, max: 3, step: 0.05 },
   { kind: 'range', key: 'floorBlur', label: '흐림', min: 0, max: 1, step: 0.05 },
@@ -2150,7 +2650,7 @@ stage.onStatus = (t) => { $('#samples').textContent = t; };
 // 실사 메뉴 표시 — 지금 실제 방식으로(사용자 지시 2026-11-06 「렌더링모드 표시가 기본모드가 아닌데 계속 기본모드로 표시」).
 // 메뉴는 누를 때만 바뀌어서, 저장된 후처리 · 후처리 메뉴 · 성능 단계로 SSR · SSS 가 켜져 있어도 「실시간 (기본)」으로 보였다.
 // 실시간에서 SSR · SSS 가 켜져 있으면 ④ 고품질로 본다
-const shownMode = (): RenderMode => (stage.mode !== 'raster' ? stage.mode : stage.raster.post.ssr || stage.raster.post.sss ? 'hq' : 'raster');
+const shownMode = (): RenderMode => (stage.mode !== 'raster' ? stage.mode : stage.raster.post.ssr ? 'hq' : 'raster');
 const syncRenderMenu = () => {
   const m = shownMode();
   renderPop.querySelectorAll<HTMLElement>('[data-mode]').forEach((x) => x.classList.toggle('on', x.dataset.mode === m));
@@ -2224,6 +2724,27 @@ setInterval(() => {
 }, 2000);
 $('#t-plan').addEventListener('click', () => { const box = $('#plan-box'); box.hidden = !box.hidden; $('#t-plan').classList.toggle('on', !box.hidden); viewCfg.plan = !box.hidden; saveView(); });
 if (viewCfg.plan === false) { $('#plan-box').hidden = true; $('#t-plan').classList.remove('on'); }
+/* 2D · 3D 보기 — 2D 는 평면도를 화면 가득, 3D 는 왼쪽 아래 작은 창(평면도 창이 있던 자리 · 크기). 사용자 2026-11-09
+ * 「3D 버튼을 2D / 3D 보기로 전환 — 2D 는 평면도를 확대해 전체 화면, 3D 화면을 작게 지금 평면도처럼」.
+ * 자리만 바꾼다 — 3D 화면은 크기 변화를 스스로 따라가고(ResizeObserver), 평면도는 보기 범위(viewBox)째로 커진다 */
+function setDim(two: boolean) {
+  devact(two ? '2D' : '3D');
+  const vp = $('#viewport'), box = $('#plan-box'), b = $('#t-dim');
+  vp.classList.toggle('v2d', two);
+  // 3D 작은 창 크기 — 평면도 창을 끌어 키운 크기가 있으면 그것(정보 창은 그 위까지만)
+  const vc = viewCfg as { planW?: number; planH?: number; dim2?: boolean };
+  if (vc.planW && vc.planH) { vp.style.setProperty('--inset-w', `${vc.planW}px`); vp.style.setProperty('--inset-h', `${vc.planH}px`); }
+  // 2D 에선 평면도가 곧 화면 — 끄는 단추를 숨긴다. 3D 로 돌아오면 평면도 창 켜고 끈 상태 그대로
+  box.hidden = two ? false : viewCfg.plan === false;
+  $('#t-plan').hidden = two;
+  b.classList.toggle('on', two);
+  b.querySelector('b')!.textContent = two ? '2D' : '3D';
+  b.dataset.tip = two ? '3D 로 크게 보기 (평면도는 작은 창으로)' : '2D 평면도로 크게 보기 (3D 는 작은 창으로)';
+  vc.dim2 = two; saveView();
+  stage.invalidate(true);
+}
+$('#t-dim').addEventListener('click', () => setDim(!$('#viewport').classList.contains('v2d')));
+if ((viewCfg as { dim2?: boolean }).dim2) setDim(true);
 // 평면도 확대 · 축소 · 맞춤 버튼
 document.querySelectorAll<HTMLElement>('[data-pz]').forEach((b) => b.addEventListener('click', () => {
   const k = b.dataset.pz; if (k === 'fit') plan.fit(); else plan.zoomBy(k === 'in' ? 1.25 : 1 / 1.25);
@@ -2273,6 +2794,7 @@ function refreshPanels() {
 }
 /** 설계 · 배치안을 그대로 놓는다 — 자동 배치는 다른 안 목록에만 쓰고, 지금 안은 저장된 배치(직접 고친 장 포함) 그대로 */
 async function applySnapshot(s: Snapshot, record: boolean) {
+  if (preview) endPreview(false, false);
   clearSelection();
   restoring = !record;
   clearTimeout(commitTimer);
@@ -2368,6 +2890,7 @@ window.addEventListener('keydown', (e) => {
   const t = e.target as HTMLElement;
   if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
   const k = e.key.toLowerCase();
+  if (preview && ['z', 'y', 's', 'o'].includes(k)) pick(null);     // 미리보기는 거두고(취소) — 되돌리기 · 저장은 원래 배치안으로
   if (k === 'z' && !e.shiftKey) { e.preventDefault(); undo(); }
   else if (k === 'y' || (k === 'z' && e.shiftKey)) { e.preventDefault(); redo(); }
   else if (k === 's') { e.preventDefault(); void saveFile(); }
@@ -2396,6 +2919,6 @@ renderHistory();
 void rebuildKitchen();
 aim();
 // 시험용
-(window as unknown as Record<string, unknown>).__kp = { d, stage, get cands() { return cands; }, get current() { return current; }, get kitchen() { return lastKitchen; }, replan, resizeItem, rebuildKitchen, pick, swapItem, runRobot, addBeside, removeItem, get robotRun() { return robotRun; }, robotPath,
+(window as unknown as Record<string, unknown>).__kp = { d, stage, get cands() { return cands; }, get current() { return current; }, get kitchen() { return lastKitchen; }, replan, resizeItem, nudgeItem, dragItem, rebuildKitchen, pick, swapItem, runRobot, addBeside, removeItem, get robotRun() { return robotRun; }, robotPath,
   hist, undo, redo, commit, fileText: () => toFile({ design: d, plan: current }, { app: `kitchen-planner ${pkg.version}` }), openText: (t: string) => applySnapshot(fromFile(t), true),
   bom: () => { const rows = current ? buildBom(d, current, cat, grade()) : []; return { rows, gaps: bomGaps(rows) }; } };

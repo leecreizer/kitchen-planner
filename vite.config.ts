@@ -1,6 +1,7 @@
 import { defineConfig } from 'vite';
 import { realpathSync } from 'node:fs';
 import { aiProxy } from './server/aiProxy';
+import { devLog } from './server/devLog';
 // node_modules 는 다른 프로젝트 설치본을 연결(junction)해 쓸 수 있다 — 실제 위치도 읽기 허용. three 0.186 · vite 6
 export default defineConfig(({ mode }) => ({
   base: './',
@@ -11,5 +12,6 @@ export default defineConfig(({ mode }) => ({
   // MuTracer 는 노이즈 제거(OIDN) 가중치를 패키지 안에서 읽는다 — 미리 묶으면 경로가 바뀌어 못 읽는다(붙박이장 플래너와 같음)
   optimizeDeps: { exclude: ['@meimu/mutracer'] },
   // 프롬프트 AI 해석(Claude · Gemini · GPT) 중계 — 키는 .env.local(서버 쪽)에만
-  plugins: [aiProxy(mode, process.cwd())],
+  // 개발 서버 기록 — 쓰는 브라우저가 보낸 오류 · 3D 상태를 .devlog/client.log 로
+  plugins: [aiProxy(mode, process.cwd()), devLog(process.cwd())],
 }));

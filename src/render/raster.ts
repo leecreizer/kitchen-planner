@@ -153,6 +153,8 @@ function loadPost(): PostSettings {
     saved.aoV = 2;
     // 바닥 반사 — 처음 넣을 때 기본 1 로 저장된 설정을 한 번만 0.1(사용자 지시 2026-11-06 「0.2로」 → 「0.1로, 아직도 강해」). 메뉴에서 바꾼 값은 그 뒤로 그대로
     if ((saved.floorV ?? 0) < 2) { if (saved.floorRefl != null) saved.floorRefl = 0.1; saved.floorV = 2; }
+    // 접촉 그림자(SSS)는 메뉴에서 뺐다 — 켜 둔 채 저장된 설정도 끈다(화면 차이 1% 미만 · GPU 17% 더 · 3D 화면이 비던 원인, 사용자 2026-11-09)
+    saved.sss = false;
     return { ...POST_DEFAULTS, ...saved };
   } catch { return { ...POST_DEFAULTS }; }
 }
@@ -327,7 +329,19 @@ function webgpu(scene: THREE.Scene, camera: THREE.PerspectiveCamera, mainLight?:
       const withSSR = (b: any) => post.ssr ? once(`ssr+${post.ssgi}|${post.aoKind}|${post.denoise}`, () => vec4(b.rgb.add(ssrRGB()), b.a)) : b;
       // 화면 그림자(SSS) — 깊이를 먼저 그리고(pre-pass), 해 그림자에 곱하도록 장면 그리기 문맥에 넣는다
       const sssContext = () => once('sss', () => {
-        const pre = pass(scene, camera); (pre as any).transparent = false;
+        // 깊이 먼저 그리기는 전용 카메라로 — 이 깊이는 장면 그리기(scenePass) 도중 그림자 문맥이 SSS 를 읽을 때 그려지는데, 같은 장면 · 같은 카메라면
+        // three 가 같은 그리기 목록을 써서 바깥(장면 그리기) 목록을 덮어썼다 → 「renderList[i] undefined」로 그리기가 끊기고 렌더러 상태(MRT)가 안 돌아와
+        // 이후 파이프라인이 계속 무효 → 3D 화면이 비었다(사용자 브라우저 기록 2026-11-09, SSS 켠 설정에서만). 그릴 때마다 메인 카메라(TRAA 흔들림 포함)를 옮겨 온다
+        const preCam = new THREE.PerspectiveCamera();
+        preCam.copy(camera, false);
+        const pre = pass(scene, preCam); (pre as any).transparent = false;
+        const before = pre.updateBefore.bind(pre);
+        (pre as any).updateBefore = (frame: unknown) => {
+          preCam.copy(camera, false);
+          preCam.matrixWorld.copy(camera.matrixWorld); preCam.matrixWorldInverse.copy(camera.matrixWorldInverse);
+          preCam.projectionMatrix.copy(camera.projectionMatrix); preCam.projectionMatrixInverse.copy(camera.projectionMatrixInverse);
+          return before(frame as never);
+        };
         pre.setMRT(mrt({ output: velocity }));
         const sp: any = sss(pre.getTextureNode('depth'), camera, mainLight!);
         // 광선 길이 5cm — 물체가 닿는 자리의 짧은 그림자만. 15cm 일 땐 천장–상부장 몰딩 · 벽 윗선 · 장 끝 · 걸레받이처럼 햇빛 받는 안쪽 모서리마다

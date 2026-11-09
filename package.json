@@ -1,7 +1,7 @@
 {
   "name": "kitchen-planner",
   "private": true,
-  "version": "0.0.3",
+  "version": "0.0.4",
   "description": "부엌 셀프 설계 — 쿠지알러 부엌 파라메트릭 원본 · 자동 배치 · 실사 렌더",
   "type": "module",
   "scripts": {

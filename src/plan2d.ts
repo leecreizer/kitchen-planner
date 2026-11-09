@@ -62,6 +62,17 @@ export class PlanView {
   private unitPerPx() { const m = this.svg.getScreenCTM(); return m ? 1 / m.a : 1; }
   /** 처음 보기(방 전체 맞춤) */
   fit() { this.view = { k: 1, ox: 0, oy: 0 }; this.applyView(); }
+  /** 방 좌표(mm) 범위를 화면 가운데로 크게 — 그 범위가 보기의 60% 쯤(Z 키 줌). 평면도는 트인 쪽이 아래로 돌아가 있어 같은 각도로 돌려 잰다 */
+  focusBox(x0: number, z0: number, x1: number, z1: number) {
+    if (!this.d) return;
+    const r = this.d.room, rad = this.angle * Math.PI / 180, cx = r.w / 2, cz = r.d / 2;
+    const rp = [[x0, z0], [x1, z0], [x1, z1], [x0, z1]].map(([x, z]) => [cx + (x - cx) * Math.cos(rad) - (z - cz) * Math.sin(rad), cz + (x - cx) * Math.sin(rad) + (z - cz) * Math.cos(rad)]);
+    const X0 = Math.min(...rp.map((p) => p[0])), X1 = Math.max(...rp.map((p) => p[0])), Y0 = Math.min(...rp.map((p) => p[1])), Y1 = Math.max(...rp.map((p) => p[1]));
+    const { x, y, w, h } = this.base;
+    const k = Math.min(w / (Math.max(400, X1 - X0) / 0.6), h / (Math.max(400, Y1 - Y0) / 0.6));
+    this.view = { k: Math.max(0.5, Math.min(10, k)), ox: (X0 + X1) / 2 - (x + w / 2), oy: (Y0 + Y1) / 2 - (y + h / 2) };
+    this.applyView();
+  }
   zoomBy(f: number, at?: { x: number; y: number }) {
     const k0 = this.view.k, k1 = Math.max(0.5, Math.min(10, k0 * f));
     if (k1 === k0) return;

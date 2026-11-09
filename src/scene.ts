@@ -274,18 +274,23 @@ export class Stage {
     void p.then((t) => { this.scene.background = t; this.outsideGain = o.gain; this.scene.backgroundIntensity = 0.9 * this.skyK * o.gain; this.scene.backgroundRotation.set(0, o.rot * Math.PI / 180, 0); this.envDirty = true; this.invalidate(); });
   }
   /** 고른 것 표시 — 반투명 파란 상자 + 굵은 테두리 (가려도 보이게 위에 그림) */
+  /** 지금 선택 표시 범위(월드 m) — 장 · 아일랜드 · 쿡탑 · 식탁 · 창 · 벽 어느 것이든. Z 키 줌이 쓴다 */
+  selBounds: THREE.Box3 | null = null;
   highlight(obj: THREE.Object3D | THREE.Box3 | null) {
     if (this.selBox) { this.scene.remove(this.selBox); this.selBox.traverse((o) => { const m = o as THREE.Mesh; m.geometry?.dispose(); (m.material as THREE.Material | undefined)?.dispose(); }); this.selBox = undefined; }
+    this.selBounds = null;
     this.invalidate();
     if (!obj) return;
     const b = obj instanceof THREE.Box3 ? obj.clone() : new THREE.Box3().setFromObject(obj);
     b.expandByScalar(0.008);
+    this.selBounds = b.clone();
     const size = b.getSize(new THREE.Vector3()), c = b.getCenter(new THREE.Vector3());
-    const g = new THREE.Group();
-    const fill = new THREE.Mesh(new THREE.BoxGeometry(size.x, size.y, size.z), new THREE.MeshBasicMaterial({ color: '#2f6bff', transparent: true, opacity: 0.16, depthTest: false }));
-    const edge = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(size.x, size.y, size.z)), new THREE.LineBasicMaterial({ color: '#2f6bff', depthTest: false }));
-    fill.renderOrder = edge.renderOrder = 20;
-    g.add(fill, edge); g.position.copy(c);
+    // 테두리만 — 예전 파란 덮개(반투명 면)는 실시간 화면에서 진하게 보여 고른 장 모양 · 문 안쪽을 가렸다(사용자 2026-11-09 「테두리만 남겨」)
+    const g = new THREE.Group(), box = new THREE.BoxGeometry(size.x, size.y, size.z);
+    const edge = new THREE.LineSegments(new THREE.EdgesGeometry(box), new THREE.LineBasicMaterial({ color: '#2f6bff', depthTest: false }));
+    box.dispose();
+    edge.renderOrder = 20;
+    g.add(edge); g.position.copy(c);
     this.selBox = g;
     this.scene.add(g);
   }
@@ -400,6 +405,12 @@ export class Stage {
       this.invalidate(!camOnly);
     };
     for (const t of ['pointerdown', 'pointermove', 'pointerup', 'wheel', 'keydown', 'input', 'change']) window.addEventListener(t, poke, { capture: true, passive: true });
+    // 탭 · 창이 다시 보이면 다시 그린다 — 다른 창(VS Code 등)이 크롬을 덮으면 탭이 숨김(hidden)이 되고, 그동안 브라우저가 캔버스 내용을 버릴 수 있다.
+    // 바뀐 게 있을 때만 그리는 화면이라 돌아와도 빈 채로 남았다(사용자 2026-11-09 「3D 캔버스가 계속 날아간다」 — 그 브라우저 기록: 가려진 동안 그린 장 0)
+    const redraw = () => { if (!document.hidden) this.invalidate(true); };
+    document.addEventListener('visibilitychange', redraw);
+    window.addEventListener('focus', redraw);
+    window.addEventListener('pageshow', redraw);
     // 텍스처 · 모델 · HDR 을 다 받으면(비동기 — 입력이 끝난 뒤 도착한다) 다시 그린다
     const lm = THREE.DefaultLoadingManager, prevProgress = lm.onProgress;
     lm.onProgress = (url, loaded, total) => { prevProgress?.(url, loaded, total); this.invalidate(); };
@@ -1025,8 +1036,9 @@ export class Stage {
     // 실시간 ↔ ④ 고품질은 같은 화면 — 후처리 두 개만 켜고 끈다
     if ((mode === 'raster' || mode === 'hq') && this.mode === 'raster') {
       if (mode === 'hq' && this.raster.kind !== 'webgpu') { this.onStatus?.('이 방식은 WebGPU 화면에서만 됩니다'); return; }
+      // 접촉 그림자(SSS)는 뺐다 — 화면 차이 1% 미만인데 GPU 17% 더 쓰고, 3D 화면이 비는 원인이었다(사용자 2026-11-09 「메뉴에서 빼」)
       const on = mode === 'hq';
-      if (!!this.raster.post.ssr !== on || !!this.raster.post.sss !== on) this.raster.setPost({ ssr: on, sss: on });
+      if (!!this.raster.post.ssr !== on || this.raster.post.sss) this.raster.setPost({ ssr: on, sss: false });
       return;
     }
     if (mode === this.mode) return;
@@ -1035,9 +1047,9 @@ export class Stage {
     if (mode === 'gpupt') await loadGpt();
     const sky = mode === 'mutracer' || mode === 'gpupt' ? await this.loadSky() : undefined;
     if (req !== this.modeReq) return;
-    // ④ 실시간 고품질 = 실시간 + 화면 반사 · 접촉 그림자, 실시간(기본)은 둘을 끈다(붙박이장 플래너와 같음)
+    // ④ 실시간 고품질 = 실시간 + 화면 반사, 실시간(기본)은 끈다. 접촉 그림자(SSS)는 늘 끔(위)
     const hq = mode === 'hq';
-    if (mode === 'raster' || hq) { if (!!this.raster.post.ssr !== hq || !!this.raster.post.sss !== hq) this.raster.setPost({ ssr: hq, sss: hq }); }
+    if (mode === 'raster' || hq) { if (!!this.raster.post.ssr !== hq || this.raster.post.sss) this.raster.setPost({ ssr: hq, sss: false }); }
     // WebGPU 캔버스는 화면에 내보낸 뒤 복사하면 비어 있다 — MuTracer 덮개로 쓸 실시간 화면을 다시 그려 둔다
     if (mode === 'mutracer' && this.raster.kind === 'webgpu' && this.raster.ready) this.raster.render();
     mt?.hideMutracer();
