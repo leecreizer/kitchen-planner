@@ -45,6 +45,11 @@ export async function loadCatalog(): Promise<KitchenCatalog> {
     const [c, p] = await Promise.all([readJson('catalog.json'), readJson('profiles.json').catch(() => null)]);
     cat = c as KitchenCatalog;
     if (p) { const q = p as Partial<typeof prof>; prof = { profiles: q.profiles ?? {}, info: q.info ?? {}, needs: q.needs ?? {} }; }
+    // 제대로 그려지지 않는 도어는 목록에서 뺀다(사용자 2026-11-12 「제대로 표현되지 않는 도어 모델은 삭제해」) — 원본 자료는 그대로 두고 여기서만 거른다.
+    //   쿠지알러 단면을 받아 profiles.json 에 들어오면 저절로 다시 나온다. 그레이드의 도어가 모두 빠지면 그대로 둔다
+    for (const g of cat.grades) { const ok = g.doors.filter((x) => !doorBroken(x.obs).length); if (ok.length) g.doors = ok; }
+    // 키친바흐 포켓 폴딩장(2D) — 원본이 문틀 · 포켓 문짝뿐이고 안이 비어, 문을 접어 넣으면 빈 틀만 선다(가까이 찍어 확인 2026-11-12) → 장 목록에서 뺀다
+    cat.modules = cat.modules.filter((m) => !(m.key === 'foldTall' && m.series === 'KB'));
   }
   return cat;
 }
@@ -52,9 +57,10 @@ export const profileOf = (id: string): ProfileData | undefined => prof.profiles[
 /** 도어 쪽 단면(이름에 「도어」) 중 좌표가 없는 것의 이름 — 그 도어는 몰딩 · 손잡이 일부가 18×18 네모로 근사된다. 없으면 [] */
 export const doorGaps = (obs: string): string[] =>
   (prof.needs[obs] ?? []).filter((p) => !prof.profiles[p] && /도어/.test(prof.info[p]?.name ?? '')).map((p) => prof.info[p]?.name ?? p);
-/** 앞판 자체를 단면 스윕으로 만드는 도어(맨하탄 MHT · 아티잔) — 단면이 없으면 앞판이 떠 있고 속이 보일 만큼 깨진다(같은 시점 확인 2026-11-06).
- *  첼시 · 그레이스 · 베일 · 페이지는 손잡이 · 테두리만 근사되고 앞판은 정상이라 고를 수 있게 둔다 */
-const FACE = /맨하탄|아티산/;
+/** 앞판 · 액자 테두리를 단면 스윕으로 만드는 도어(맨하탄 MHT · 아티잔 · 첼시) — 단면이 없으면 앞판이 떠 있고 속이 보일 만큼 깨진다(같은 시점 확인 2026-11-06).
+ *  첼시는 액자 테두리(외곽 · 안쪽 몰딩)가 18×18 네모로 그려져 문짝 둘레로 장 속이 보인다(가까이 찍어 확인 2026-11-12).
+ *  그레이스 · 베일 · 페이지는 손잡이 · 옆마감만 근사되고 앞판은 정상이라 둔다 */
+const FACE = /맨하탄|아티산|첼시/;
 export const doorBroken = (obs: string): string[] => doorGaps(obs).filter((n) => FACE.test(n));
 /** 고를 수 있는 도어 — 깨져 보이는 도어는 뺀다(모두 그렇면 그대로) */
 export function usableDoors(g: GradeDef): DoorDef[] {

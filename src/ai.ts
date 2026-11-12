@@ -68,7 +68,7 @@ function currentDesign(d: Design, cat: KitchenCatalog) {
   return {
     roomFront: d.room[front], roomSide: d.room[side], ceiling: d.room.h, layout: d.layout, island: d.island, islandLen: d.islandCfg.len, islandStyle: d.islandCfg.style ?? 'basic',
     style: d.style, wants: d.wants ?? [], grade: d.grade, door: `${d.door} ${g?.doors.find((x) => x.obs === d.door)?.name ?? ''}`, counter: d.counter, tile: d.tile, floor: d.floor, wallpaper: d.wallpaper,
-    fridgeKind: d.fridgeKind ?? 'twin', noFridge: !!d.noFridge, fridgeColor: d.fridgeColor ?? 'cotta-white', cornerPantry: !!d.cornerPantry, glassAccent: !!d.glassAccent,
+    fridgeKind: d.fridgeKind ?? 'quad', noFridge: !!d.noFridge, fridgeColor: d.fridgeColor ?? 'cotta-white', cornerPantry: !!d.cornerPantry, glassAccent: !!d.glassAccent,
     dining: d.dining ? { on: d.dining.on, shape: d.dining.shape, seats: d.dining.seats } : { on: false },
     appliance: Object.fromEntries(APPLIANCE_CATS.filter(([k]) => k !== 'fridge').map(([k]) => [k, applianceOf(k, d.appliance?.[k as keyof NonNullable<Design['appliance']>])?.model ?? null])),
     rooms: d.openings.filter((o) => o.kind !== 'window').map((o) => o.kind),

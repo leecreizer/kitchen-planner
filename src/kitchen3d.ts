@@ -9,12 +9,13 @@ import { boxUV, buildModule, cabinetCacheGeneration, partMaterial, texture, trim
 import { shared, shareTree } from './dispose';
 import { ISLAND_HOOD_DEFAULT, hoodKindOf, applianceOf, type Appliance } from './catalog';
 import { texUrl, type GradeDef, type KitchenCatalog, type Series } from './kjlLib';
-import { CASING } from './room3d';
+import { COUNTER_TOP, splashLayout } from './splash';
 import { FRIDGE_COLORS, ISLAND_TABLE, SPLASH_DEFAULT, nextWall, prevWall, wallLength, type Design, type WallId } from './plan';
 
 const S = 0.001;
 /** 높이(mm) — 걸레받이 위에 원본 몸통(768)을 올리고 상판을 덮어 910 (원본 EP B 880 = 상판 아래까지) */
-export const PLINTH = 112, COUNTER_T = 30, COUNTER_TOP = 910, SPLASH_H = 620;
+export const PLINTH = 112, COUNTER_T = 30, SPLASH_H = 620;
+export { COUNTER_TOP };
 /** 걸레받이 앞면 — 도어 면(593)에서 55 들어감 · 두께 18 */
 const PLINTH_Z = 520, SKIRT_T = 18;
 /** 원본 휠라 앞판 재질(고정 회색) — 도어 재질로 바꿔 칠한다 */
@@ -27,9 +28,10 @@ export interface KitchenObj { group: THREE.Group; items: { item: Item; obj: THRE
 /** 문 열기 — t 0(닫힘)~1(열림). 여닫이 좌우 90° · 플랩 위로 · 식세 아래로 85° · 서랍은 몸통 깊이 3/4 앞으로 — 각 문짝의 max(충돌로 줄어듦)까지 */
 export function setDoors(doors: DoorPart[], t: number) {
   for (const d of doors) {
-    if (d.kind === 'swing') d.pivot.rotation.y = d.amt * t * d.max;
-    else if (d.kind === 'flap') d.pivot.rotation.x = d.amt * t * d.max;
-    else d.pivot.position.z = (d.pivot.userData.z0 ??= d.pivot.position.z) + d.amt * t * d.max;
+    const tt = d.always ? 1 : t;
+    if (d.kind === 'swing') d.pivot.rotation.y = d.amt * tt * d.max;
+    else if (d.kind === 'flap') d.pivot.rotation.x = d.amt * tt * d.max;
+    else d.pivot.position.z = (d.pivot.userData.z0 ??= d.pivot.position.z) + d.amt * tt * d.max;
   }
 }
 
@@ -56,55 +58,34 @@ function limitDoors(root: THREE.Object3D, doors: DoorPart[]) {
   setDoors(doors, 0);
 }
 
-/** 벽 마감 — 상판 위 벽. 벽마다 타일(기본) 또는 벽판넬(상판 재질 판, 두께 6). 창 자리는 창 몰딩(CASING) 아래까지만
+/** 벽 마감 — 상판 위 벽. 벽마다 타일(기본) 또는 벽판넬(상판 재질 판, 두께 6). 창 자리는 창 몰딩(CASING) 아래 · 위로 나눠(splashLayout)
  *  (창을 옮기면 이것만 다시 만든다). 메시마다 userData.splashWall = 벽 — 3D 에서 눌러 고른다 */
 export function buildSplashes(c: Candidate, d: Design, cat: KitchenCatalog): THREE.Group {
   const out = new THREE.Group();
   out.name = 'splash';
-  const wallOf = new Map<Frame, WallId>();
-  for (const it of c.items) if (it.wall != null) wallOf.set(it.frame, it.wall);
   const tile = cat.tiles.find((x) => x.id === d.tile) ?? cat.tiles[0];
   const tileMat = new THREE.MeshStandardMaterial({ map: texture(texUrl(tile.id)), roughness: 0.35 });
   const panelMats = new Map<string, THREE.MeshStandardMaterial>();
-  const done = new Set<WallId>();
-  for (const s of c.splashes) {
-    const wall = wallOf.get(s.frame);
+  // 조각 자리(창 아래 · 위 나누기 포함)는 splashLayout — 여기선 그리기만
+  for (const { s, wall, cfg, r0, y0, pieces } of splashLayout(c, d)) {
     const g = frameGroup(s.frame);
     if (wall != null) g.userData.wall = wall;
-    const cfg = (wall != null ? d.splash?.[wall] : undefined) ?? { kind: 'tile' as const };
-    const panel = cfg.kind === 'panel';
-    const y0 = cfg.y ?? COUNTER_TOP, H = cfg.h ?? SPLASH_DEFAULT.h, dep = cfg.depth ?? (panel ? SPLASH_DEFAULT.panelDepth : 0);
-    // 길이 · 시작 — 입력했으면 그 구간 그대로(벽 안으로만, 그 벽에 한 번). 예전엔 상판 줄 구간마다 잘려 입력과 달랐다. 안 했으면 상판 줄 구간
-    const own = cfg.t0 != null || cfg.len != null;
-    if (own && wall != null && done.has(wall)) { out.add(g); continue; }
-    if (own && wall != null) done.add(wall);
-    const segs = wall != null ? c.splashes.filter((x) => wallOf.get(x.frame) === wall) : [s];
-    const a0 = Math.min(...segs.map((x) => x.t0)), a1 = Math.max(...segs.map((x) => x.t1)), L = wall != null ? wallLength(d.room, wall) : s.t1;
-    const r0 = own ? Math.max(0, cfg.t0 ?? a0) : s.t0, r1 = own ? Math.min(L, cfg.len != null ? (cfg.t0 ?? a0) + cfg.len : a1) : s.t1;
-    if (r1 - r0 < 1) { out.add(g); continue; }
+    const panel = cfg.kind === 'panel', dep = cfg.depth ?? (panel ? SPLASH_DEFAULT.panelDepth : 0);
     const pm = panel ? cat.counters.find((x) => x.id === cfg.mat) ?? cat.counters.find((x) => x.id === d.counter) ?? cat.counters[0] : undefined;
     let mat: THREE.MeshStandardMaterial = tileMat;
     if (pm) { mat = panelMats.get(pm.id) ?? new THREE.MeshStandardMaterial({ map: texture(texUrl(pm.id)), roughness: 0.3 }); panelMats.set(pm.id, mat); }
-    const ops = d.openings.filter((o) => o.wall === wall && (o.kind === 'window' ? o.sill < y0 + H + CASING : true));
-    const cuts: number[] = [r0, r1];
-    for (const o of ops) cuts.push(o.t - CASING, o.t + o.w + CASING);
-    const xs = [...new Set(cuts.filter((x) => x >= r0 && x <= r1))].sort((x, y) => x - y);
-    for (let i = 0; i + 1 < xs.length; i++) {
-      const x0 = xs[i], x1 = xs[i + 1], mid = (x0 + x1) / 2;
-      if (x1 - x0 < 1) continue;
-      const op = ops.find((o) => mid > o.t - CASING && mid < o.t + o.w + CASING);
-      const h = op ? (op.kind === 'window' ? Math.min(H, op.sill - CASING - y0) : 0) : H;
-      if (h < 20) continue;
-      // 줄눈 · 결은 시작 위치(r0) · 배치 높이(y0)에서 시작 — 그 점을 원점으로 UV 를 잡고 메시를 옮긴다
+    for (const [x0, x1, ya, yb] of pieces) {
+      const mid = (x0 + x1) / 2, h = yb - ya;
+      // 줄눈 · 결은 시작 위치(r0) · 배치 높이(y0)에서 시작 — 그 점을 원점으로 UV 를 잡고 메시를 옮긴다(창 위 조각도 같은 원점이라 줄눈이 이어진다)
       let geo: THREE.BufferGeometry;
       if (panel) {
         // 벽판넬 — 벽에 붙인 판(두께 dep). 상판 재질 결 그대로(mm 투영)
         geo = new THREE.BoxGeometry(x1 - x0, h, Math.max(1, dep));
-        geo.translate(mid - r0, h / 2, Math.max(1, dep) / 2);
+        geo.translate(mid, ya + h / 2, Math.max(1, dep) / 2);
         worldUV(geo, pm!.size);
       } else {
         geo = new THREE.PlaneGeometry(x1 - x0, h);
-        geo.translate(mid - r0, h / 2, 2 + dep);
+        geo.translate(mid, ya + h / 2, 2 + dep);
         worldUV(geo, tile.size[0], tile.size[1]);
       }
       const m = new THREE.Mesh(geo, mat); m.receiveShadow = true; m.castShadow = panel;
@@ -475,6 +456,44 @@ export async function buildKitchen(c: Candidate, d: Design, cat: KitchenCatalog,
     if (it.key === 'hood') g.add(hoodUnit(Math.min(it.w, applianceOf('hood', d.appliance?.hood)?.size?.[0] ?? it.w), y, b.frame.max.z - b.frame.min.z || 340, it.w));
     g.userData.gaps = b.gaps.map(([a, c]) => [a + y, c + y]);
     doors.push(...b.doors);
+    // 카페장 · 폴딩장 류 중 원본에 도어개폐율(DROP) 변수가 없는 것(키친바흐 카페장 = 리프트업 · 폴딩 상부장 = 플랩 · 폴딩)은 문짝을 늘 연 채로 —
+    // 도어개폐율이 있는 것(유로 카페장 · 포켓 폴딩장)은 main 이 DROP 100 으로 접어 넣는다(사용자 2026-11-11 「카페장과 폴딩장 류는 도어가 기본적으로 열려있고 접혀서 안으로」)
+    //   여는 방향은 안쪽 — 문짝을 장 안으로 90° 돌려 옆판(플랩은 윗 · 아랫판) 안쪽에 붙이고 뒤판 쪽으로 밀어 넣는다(포켓에 들어간 모습).
+    //   문짝이 장 깊이보다 길어 안에 안 들어가면 밖으로 연 채로 둔다
+    if (it.key === 'wallFold' || (it.key === 'cafeTall' && !m.doorVar)) {
+      const outside: DoorPart[] = [];
+      const boxOf = (dp: DoorPart) => {
+        const bb = new THREE.Box3();
+        for (const o of dp.pivot.children) { const gg = (o as THREE.Mesh).geometry; if (!gg) continue; gg.computeBoundingBox(); bb.union(gg.boundingBox!.clone().translate(o.position)); }
+        return bb;
+      };
+      for (const dp of b.doors) {
+        if (dp.kind === 'drawer') continue;
+        // 폴딩 상부장은 「문 열기」 단추를 따른다 — 열면 접혀 올라가고 닫으면 닫힌다(사용자 2026-11-11 「폴딩 상부장도 문 열면 열리고 닫으면 닫게해」). 카페장만 늘 연 채
+        if (it.key !== 'wallFold') dp.always = true;
+        const bb = boxOf(dp);
+        // 원본 회전축은 문 앞면보다 앞에 있기도 하다(KB 카페장 41) — 돌린 뒤 문짝 상자(rb)를 구해 그 상자를 옆판 안쪽 · 뒤판 앞에 맞춘다
+        const inward = -dp.amt, SIDE = 20, BACK = 20, depth = b.frame.max.z - b.frame.min.z;
+        const rb = bb.clone().applyMatrix4(dp.kind === 'swing' ? new THREE.Matrix4().makeRotationY(inward * Math.PI / 2) : new THREE.Matrix4().makeRotationX(inward * Math.PI / 2));
+        if (rb.max.z - rb.min.z + BACK + 10 > depth) { outside.push(dp); continue; }
+        const p = dp.pivot.position, x0 = p.x, y0 = p.y;
+        if (dp.kind === 'swing') p.x = dp.amt < 0 ? x0 + bb.min.x + SIDE - rb.min.x : x0 + bb.max.x - SIDE - rb.max.x;
+        else p.y = dp.amt < 0 ? y0 + bb.max.y - SIDE - rb.max.y : y0 + bb.min.y + SIDE - rb.min.y;
+        p.z = b.frame.min.z + BACK - rb.min.z;
+        dp.amt = inward; dp.max = Math.PI / 2;
+      }
+      // 안에 못 들어가는 위아래 2단 플랩(유로 W플랩2 — 접이식 리프트) — 따로 열면 선반 두 개처럼 튀어나온다.
+      //   아래 문짝을 위 문짝에 매달아 등끼리 맞대도록 반 바퀴 접고, 위 문짝이 위로 90° 올린다 → 한 묶음으로 접혀 위에 걸린 모습
+      const fl = outside.filter((x) => x.kind === 'flap' && x.amt < 0).sort((p, q) => q.pivot.position.y - p.pivot.position.y);
+      if (fl.length === 2) {
+        const [U, L] = fl, lb = boxOf(L);
+        L.pivot.position.sub(U.pivot.position);
+        L.pivot.position.z += lb.min.z; // 접는 축 = 아래 문짝 뒷면
+        for (const o of L.pivot.children) o.position.z -= lb.min.z;
+        U.pivot.add(L.pivot);
+        U.max = Math.PI / 2; L.amt = 1; L.max = Math.PI;
+      }
+    }
     // 도어 변수가 없는 장(KB 망장 · 리프트업장) — 원본 기본 도어(단종 재질)가 남는다 → 아래에서 고른 도어 재질로 덮는다
     if (!m.doorVar && it.tag !== 'ep' && b.doors.length) noVarDoors.push(...b.doors);
     // 도어 재질 — 휠라 · 식세장은 앞판이 도어와 달라 잡지 않는다. 도어 변수가 없는 장은 고른 도어가 아니라 잡지 않는다
@@ -767,6 +786,7 @@ export async function buildKitchen(c: Candidate, d: Design, cat: KitchenCatalog,
       });
       tap.scale.setScalar(1000); tap.position.set(cx, COUNTER_TOP, SINK_Z - 225 - 50);
       g.add(sink, tap);
+      if (it.wall == null) g.userData.island = true;   // 아일랜드 싱크 — 아일랜드를 끌고 돌릴 때 같이
     } else {
       // 쿡탑 기기 — 상판 위에서 따로 돌린다(d.hobRot). 고르기 · 끌기 · 돌리기용 표시 hobTop
       const top = new THREE.Group();

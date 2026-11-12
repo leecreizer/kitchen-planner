@@ -29,12 +29,14 @@ export function disposeMaterial(m: THREE.Material) {
   for (const t of texturesOf(m)) if (!SHARED.has(t)) t.dispose();
   m.dispose();
 }
-/** 묶음 통째로 — 물체마다 dispose(렌더러가 그 물체용으로 만든 것) + 공유 아닌 형상 · 재질 · 텍스처 */
-export function disposeTree(root: THREE.Object3D) {
+/** 묶음 통째로 — 물체마다 dispose(렌더러가 그 물체용으로 만든 것) + 공유 아닌 형상 · 재질 · 텍스처.
+ *  스프라이트 형상은 three 가 모든 스프라이트에 하나만 만들어 같이 쓴다(Sprite.js 모듈 변수) — 놓으면 새 방 이름표(다용도실 · 서브주방 · 팬트리)가
+ *  지워진 버퍼로 그려져 「Buffer used in submit while destroyed」가 났다(사용자 브라우저 기록 2026-11-10: dispose-in-use = Sprite 형상, disposeRoom 에서) */
+export function disposeTree(root: THREE.Object3D, keep?: Set<THREE.Material>) {
   root.traverse((o) => {
     const m = o as THREE.Mesh;
-    if (m.geometry && !SHARED.has(m.geometry)) m.geometry.dispose();
-    for (const mt of [m.material ?? []].flat() as THREE.Material[]) disposeMaterial(mt);
+    if (m.geometry && !SHARED.has(m.geometry) && !(o as THREE.Sprite).isSprite) m.geometry.dispose();
+    for (const mt of [m.material ?? []].flat() as THREE.Material[]) if (!keep?.has(mt)) disposeMaterial(mt);
     (o as THREE.Object3D & { dispose?: () => void }).dispose?.();
   });
 }

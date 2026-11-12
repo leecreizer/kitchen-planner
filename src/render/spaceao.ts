@@ -12,6 +12,7 @@ import * as THREE from 'three';
 // @ts-expect-error — 타입 선언이 없는 three 부속(상자 묶어 넣기)
 import { potpack } from 'three/addons/libs/potpack.module.js';
 import type { LightIn } from './spaceao.worker';
+import { shared } from '../dispose';
 export type { LightIn };
 
 const LIFT = 0.015, PAD = 2, MAX_SIDE = 2048, CELL_MIN = 0.04, WORKERS = Math.min(12, Math.max(1, (navigator.hardwareConcurrency || 4) - 2));   // 4개 고정이었다 — 코어 24 PC 에서 광선이 대부분이라 작업자 수만큼 빨라진다
@@ -21,7 +22,21 @@ const MULTI = 1.6;
 /** 공간 면 — buildRoom 이 만든 이름. 합친(batch) 뒤엔 room-shell */
 const SHELL = /^(room-shell|floor|living-floor|ceiling|curtain-box|wall-)/;   // 부엌: 부엌·거실 바닥 · 천장 · wall-k{벽}·wall-l{거실 벽}
 
-const cur: { meshes: THREE.Mesh[]; tex: THREE.DataTexture | null; base?: Float32Array; lamp?: Float32Array } = { meshes: [], tex: null };
+const cur: { meshes: THREE.Mesh[]; tex: THREE.DataTexture | null; base?: Float32Array; lamp?: Float32Array; provisional?: boolean } = { meshes: [], tex: null };
+/** 면별 평균 밝기(이름별 · 전체) — 마지막 굽기. [기본 rgb, 조명 층 rgb, 텍셀 수, log(기본+조명) rgb 합] */
+let means: { by: Map<string, number[]>; all: number[] } | null = null;
+/** 지금 조명 층 배율 — 구울 때 조명 밝기 대비(compose) */
+let lampK = 1;
+/** 면 하나의 대표 밝기 — 기하 평균(로그 평균). 산술 평균으로 평평하게 칠하면 톤 매핑 뒤 구운 모습보다 8% 밝아 보였다(측정 2026-11-10).
+ *  조명 밝기를 바꿨으면(lampK) 산술 평균 비율만큼 */
+const meanOf = (name: string): number[] => {
+  const a = means!.by.get(name) ?? means!.all, n = Math.max(1, a[6]);
+  return [0, 1, 2].map((c) => { const am1 = (a[c] + a[3 + c]) / n, amk = (a[c] + a[3 + c] * lampK) / n, gm = Math.exp(a[7 + c] / n); return am1 > 0 ? gm * amk / am1 : amk; });
+};
+/** 굽는 동안 다는 자리 라이트맵 — 값은 쓰지 않는다(scene 이 면별 평균으로 섞는다). 둘째 UV(채널 1)를 읽는 같은 셰이더가 되게 */
+const HOLD = shared(new THREE.DataTexture(new Uint16Array(4), 1, 1, THREE.RGBAFormat, THREE.HalfFloatType));
+HOLD.channel = 1; HOLD.colorSpace = THREE.LinearSRGBColorSpace; HOLD.needsUpdate = true;
+export type SpaceAvg = Map<THREE.Mesh, number[]>;
 export const SPACE_AO_NAME = 'space-ao';
 /** 화면 그늘(AO)·화면 간접광(SSGI)을 뺄 자리 표시 — 재질 금속성에 눈에 안 띄는 값을 넣어 화면 버퍼(재질 색 a = 금속성, 8비트)로 구분한다(raster.ts).
  *  라이트맵이 켜진 공간엔 화면 그늘·간접광을 겹치지 않는다(사용자 지시 2026-11-04 「공간 라이트맵이 적용되면 AO 는 공간 적용 안 하는 게 맞다」) */
@@ -34,10 +49,26 @@ let onClear: ((meshes: THREE.Mesh[]) => void) | null = null;
 export function clearSpaceAO() {
   carry?.forEach(c => c.geo.dispose()); carry = null;
   onClear?.(cur.meshes);
-  cur.meshes = [];
+  cur.meshes = []; cur.provisional = false;
   cur.tex?.dispose(); cur.tex = null; cur.base = cur.lamp = undefined;
   seq++;                                     // 진행 중인 계산 결과는 버린다
 }
+/** 방을 새로 만들었을 때 — 새 라이트맵을 굽는 몇 초 동안 공간 면이 라이트맵 없이(다른 빛으로) 보였다가 다 구우면 확 바뀌었다
+ *  (사용자 2026-11-10 「라이트맵 생성 문제면 깜빡이지말고 자연스럽게 생성해서 적용해」). 마지막 굽기의 면별 평균 밝기를 바로 단다(scene 이 섞는다).
+ *  둘째 UV 는 아직 없으니 0 — 다 구우면 굽기가 지오메트리째 바꾸고 apply(…, fade=true)로 이어받는다. 구운 적이 없으면 null */
+export function provisionalSpaceAO(room: THREE.Object3D): { meshes: THREE.Mesh[]; tex: THREE.DataTexture; avg: SpaceAvg } | null {
+  if (!means) return null;
+  const R = SHELL_OF(room);
+  if (!R.length) return null;
+  for (const m of R) { const g = m.geometry; if (!g.getAttribute('uv1')) g.setAttribute('uv1', new THREE.BufferAttribute(new Float32Array(g.getAttribute('position').count * 2), 2)); }
+  carry?.forEach(c => c.geo.dispose()); carry = null;
+  cur.tex?.dispose(); cur.tex = null; cur.base = cur.lamp = undefined;   // 앞 방 라이트맵 — 그 방 메시는 이미 버려졌다
+  cur.meshes = R; cur.provisional = true;
+  return { meshes: R, tex: HOLD, avg: new Map(R.map((m) => [m, meanOf(m.name)])) };
+}
+/** 진행 중인 굽기만 버린다 — 지금 단 라이트맵은 그대로. 개구부를 끄는 동안(scene beginLiveRoom): 굽기가 끝나며 벽 판을 굽기 때 모양(옛 구멍 자리)으로
+ *  되바꾸지 않게. 라이트맵을 통째로 떼면(clearSpaceAO) 재질을 모두 되돌리고 실내 환경맵 · 바닥 반사를 다시 지어 끌기 첫 프레임이 0.18초 멈췄다 */
+export function cancelSpaceAO() { seq++; }
 // ---- 가구를 옮길 때 — 라이트맵을 떼지 않고 이어 단다(사용자 지시 2026-11-05 「상품 이동하면 라이트맵이 새로 생성되는데 상품 바닥 그림자 아니면 다시 그리지마」).
 // 가구를 옮기면 방을 다시 만들지만 벽·바닥·천장 모양은 그대로다. 옛 공간 메시의 지오메트리(uv1 포함)를 떠 두었다가, 새 방의 공간 메시가
 // 같은 모양이면 그대로 끼우고 지금 라이트맵을 단다. 바닥 그림자가 바뀐 새 라이트맵은 이어서 굽고, 다 구우면 한 번에 바꾼다
@@ -90,7 +121,7 @@ function albedoOf(m: THREE.Mesh): [number, number, number] {
 
 /** 굽기 — room 의 공간 면에, room · extra(장)의 보이는 불투명 메시를 가림으로. 끝나면 apply(공간 메시, 라이트맵)를 부르고 걸린 시간을 돌려준다 */
 export async function bakeSpaceAO(room: THREE.Object3D, extra: THREE.Object3D[], light: LightIn, inside: THREE.Box3,
-  apply: (meshes: THREE.Mesh[], tex: THREE.DataTexture) => void, clear: (meshes: THREE.Mesh[]) => void,
+  apply: (meshes: THREE.Mesh[], tex: THREE.DataTexture, avg?: SpaceAvg, fade?: boolean) => void, clear: (meshes: THREE.Mesh[]) => void,
   qual: { cell: number; bounce: number } = { cell: CELL_MIN, bounce: BOUNCE_RAYS }): Promise<string | null> {
   const my = ++seq, t0 = performance.now();
   room.updateMatrixWorld(true); extra.forEach(o => o.updateMatrixWorld(true));
@@ -217,18 +248,32 @@ export async function bakeSpaceAO(room: THREE.Object3D, extra: THREE.Object3D[],
   for (let i = 0; i < N * 3; i++) { base[i] = sky[i] + bounce[i] * MULTI; lamp[i] = lampD[i] + lampB[i] * MULTI; }
   const tex = new THREE.DataTexture(new Uint16Array(N * 4), W, H, THREE.RGBAFormat, THREE.HalfFloatType);
   tex.channel = 1; tex.magFilter = tex.minFilter = THREE.LinearFilter; tex.colorSpace = THREE.LinearSRGBColorSpace;
-  // ---- 입히기 — 지오메트리에 uv1, 재질은 scene.ts 가(apply)
+  // ---- 면별 평균 — 다음에 방을 새로 만들면 굽는 동안 그 면에 먼저 단다(provisionalSpaceAO)
+  const by = new Map<string, number[]>(), all = new Array(10).fill(0);
+  for (let i = 0; i < N; i++) {
+    const ci = chartOf[i]; if (ci < 0 || !has[i]) continue;
+    const nm = R[list[ci].mesh].name; let a = by.get(nm); if (!a) by.set(nm, a = new Array(10).fill(0));
+    for (let c = 0; c < 3; c++) {
+      const b = base[i * 3 + c], l = lamp[i * 3 + c], g = Math.log(b + l + 1e-4);
+      a[c] += b; a[3 + c] += l; a[7 + c] += g; all[c] += b; all[3 + c] += l; all[7 + c] += g;
+    }
+    a[6]++; all[6]++;
+  }
+  means = { by, all };
+  // ---- 입히기 — 지오메트리에 uv1, 재질은 scene.ts 가(apply). 자리 라이트맵(평균)을 달아 둔 방이면 그 평균에서 서서히(fade)
+  const fade = !!cur.provisional && cur.meshes.length === R.length && cur.meshes.every((m, i) => m === R[i]);
   clearSpaceAO(); seq = my;                  // clearSpaceAO 가 seq 를 올리지만 이 결과는 살린다
   R.forEach((m, i) => { const old = m.geometry; m.geometry = geos[i]; old.dispose(); });
   cur.tex = tex; cur.meshes = R; cur.base = base; cur.lamp = lamp; onClear = clear;
-  compose(1);
-  apply(R, tex);
+  compose(1);                                // 방금 구운 조명 밝기 그대로(배율 1)
+  apply(R, tex, new Map(R.map((m) => [m, meanOf(m.name)])), fade);
   let mean = 0, meanL = 0; for (let i = 0; i < N; i++) if (has[i]) { mean += base[i * 3 + 1]; meanL += lamp[i * 3 + 1]; }
   return `${qual.cell > CELL_MIN ? '성긴 판' : '고운 판'} · 작업자 ${WORKERS} · ${W}×${H} · 텍셀 ${Math.round(cell * 1000)}mm · 표본 ${texOf.length} · 벽 속 ${buried} · 가림 삼각형 ${d1.tris} · 평균 조도(G) 하늘+튄 빛 ${(mean / Math.max(1, cnt)).toFixed(2)} · 다운라이트 ${(meanL / Math.max(1, cnt)).toFixed(2)} · 준비 ${Math.round(tPrep)}ms · BVH ${d1.ms[0]}ms · 직접 ${d1.ms[1]}ms · 튄 빛 ${d2.ms[1]}ms · 전체 ${Math.round(performance.now() - t0)}ms`;
 }
 
 /** 라이트맵 = 기본 + 조명 층 × k (반정밀 RGBA) */
 function compose(k: number) {
+  lampK = k;
   const t = cur.tex; if (!t || !cur.base || !cur.lamp) return;
   const d = t.image.data as Uint16Array, N = d.length / 4, one = THREE.DataUtils.toHalfFloat(1);
   for (let i = 0; i < N; i++) {

@@ -105,11 +105,12 @@ export const POST_DEFAULTS: PostSettings = {
   camFov: 60, camRot: 1, camZoom: 1, camPan: 1, camDamping: true, camGrab: false,
   bakedAO: true,
   contact: true,
-  spaceAO: true, spaceLMStr: 1, spaceKeepAO: false, depthFx: 0.5, prodAO: true, prodAOStr: 0.6,
+  // 공간 그늘 유지 켬 · 공간감 0.45 · 화면 반사 0.2 · 바닥 반사 0.03 — 사용자 PC 설정 그대로(2026-11-11 「PC에서 셋팅한 기준으로 기본 셋팅」)
+  spaceAO: true, spaceLMStr: 1, spaceKeepAO: true, depthFx: 0.45, prodAO: true, prodAOStr: 0.6,
   // 화면 반사는 켬(사용자 설정 2026-11-03) — 접촉 그림자(SSS)는 끔
-  ssr: true, ssrIntensity: 0.5, sss: false,
-  // 바닥 거울 반사(사용자 지시 2026-11-06 「바닥에 거울처럼 반사」 · 「마루 반사값을 0.2로」 → 「0.1로, 아직도 강해」) — 기본 0.1, 살짝 흐리게
-  floorRefl: 0.1, floorBlur: 0.25,
+  ssr: true, ssrIntensity: 0.2, sss: false,
+  // 바닥 거울 반사(사용자 지시 2026-11-06 「바닥에 거울처럼 반사」 · 「0.2로」 → 「0.1로, 아직도 강해」 → PC 설정 0.03) — 살짝 흐리게
+  floorRefl: 0.03, floorBlur: 0.25,
   // 상판 반사(사용자 지시 2026-11-06 「대리석 상판들도 텍스쳐에 따라서 반사값을」) — 종류별 세기 그대로(배율 1)
   counterRefl: 1,
 };
@@ -152,7 +153,7 @@ function loadPost(): PostSettings {
     if (saved.aoKind === 'ssgi' && !saved.aoV) saved.aoKind = 'both';
     saved.aoV = 2;
     // 바닥 반사 — 처음 넣을 때 기본 1 로 저장된 설정을 한 번만 0.1(사용자 지시 2026-11-06 「0.2로」 → 「0.1로, 아직도 강해」). 메뉴에서 바꾼 값은 그 뒤로 그대로
-    if ((saved.floorV ?? 0) < 2) { if (saved.floorRefl != null) saved.floorRefl = 0.1; saved.floorV = 2; }
+    if ((saved.floorV ?? 0) < 2) { if (saved.floorRefl != null) saved.floorRefl = POST_DEFAULTS.floorRefl; saved.floorV = 2; }
     // 접촉 그림자(SSS)는 메뉴에서 뺐다 — 켜 둔 채 저장된 설정도 끈다(화면 차이 1% 미만 · GPU 17% 더 · 3D 화면이 비던 원인, 사용자 2026-11-09)
     saved.sss = false;
     return { ...POST_DEFAULTS, ...saved };
@@ -212,7 +213,8 @@ function keepShaderCache(renderer: WebGPURenderer, KEEP = 600) {
 
 function webgpu(scene: THREE.Scene, camera: THREE.PerspectiveCamera, mainLight?: THREE.DirectionalLight): Raster {
   // ?gputime — 프레임 GPU 시간 측정(타임스탬프 쿼리). 성능 비교·최적화 시험용
-  const renderer = new WebGPURenderer({ antialias: false, trackTimestamp: params.has('gputime') });
+  // 고성능 그래픽 카드 — 노트북(내장 + 외장)에서 외장을 쓰게. 성능 단계 자동 판정도 이 렌더러가 실제로 쓰는 카드를 본다(main detectQuality)
+  const renderer = new WebGPURenderer({ antialias: false, powerPreference: 'high-performance', trackTimestamp: params.has('gputime') });
   RectAreaLightNode.setLTC(RectAreaLightTexturesLib.init());
   const post = loadPost();
   renderer.toneMapping = TONE[post.toneMapping];

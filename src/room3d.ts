@@ -4,7 +4,8 @@ import * as THREE from 'three';
 import { textureOwn } from './cabinet3d';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { CEILING_LAMPS } from './scene';
-import { OPENING_INFO, livingOf, nextWall, prevWall, wallFrame, wallLength, type Design, type Opening, type WallId, type WallSpace } from './plan';
+import { disposeTree, shared } from './dispose';
+import { CASING, OPENING_INFO, isKitchenWall, livingOf, livingWindow, nextWall, prevWall, wallFrame, wallLength, type AnyWall, type Design, type LivingWallId, type Opening, type WallId, type WallSpace } from './plan';
 
 export const WALL_T = 150;
 /** 방 바로 아래 평면들(같은 이름 묶음)을 한 메시로 합친다 — 이음매 없이. size(m) 를 주면 UV = 월드 x · z ÷ 무늬 크기 */
@@ -24,8 +25,15 @@ function joinPlanes(group: THREE.Group, name: string, names: string[], size?: nu
 }
 /** 천장 — 양면(어느 쪽에서 오는 빛도 막는다) · 그림자 드리움은 메시에서 */
 const ceilMat = () => new THREE.MeshStandardMaterial({ color: '#f4f2ee', roughness: 0.9, side: THREE.DoubleSide, shadowSide: THREE.DoubleSide });
-/** 창 · 문 안쪽 몰딩 폭 — 타일이 여기까지 붙는다 */
-export const CASING = 50;
+/** 개구부 · 벽 너머 공간 재질 — 이름마다 하나를 만들어 같이 쓴다(shared — 방을 놓아도 남김). 공간 요소 폭을 끄는 동안엔 그 요소를 매 프레임
+ *  새로 만드는데(liveOpening), 재질까지 새로 만들면 프레임마다 셰이더 준비를 다시 해 폭 바꾸기 끌기가 무거웠다(중간값 45ms) */
+const MATS = new Map<string, THREE.Material>();
+function mat<T extends THREE.Material>(key: string, make: () => T): T {
+  let m = MATS.get(key) as T | undefined;
+  if (!m) { m = shared(make()); MATS.set(key, m); }
+  return m;
+}
+export { CASING };
 /** 벽 구멍 — 개구부보다 HOLE_IN 만큼 작게 뚫는다(안쪽 마감판 두께 12 의 절반). 같은 크기면 벽 잘린 면과 마감판 바깥면이 한 면이라
  *  벽이 틀을 뚫고 비쳤다(사용자 2026-11-05). 바닥에서 시작하는 문 · 통로는 아래를 줄이지 않는다 */
 const HOLE_IN = 6;
@@ -44,6 +52,8 @@ export interface RoomObj {
   walls: { wall: WallId; obj: THREE.Object3D; n: THREE.Vector3; p: THREE.Vector3; keep?: boolean }[];
   /** 개구부 고르기용 */
   pick: THREE.Object3D[];
+  /** 개구부를 끄는 동안 그 개구부와 닿은 벽만 고치는 데 쓰는 것(liveOpening) — 개구부 묶음 · 부엌 벽 묶음 · 방 전체가 같이 쓰는 재질 */
+  live: { ops: Map<string, THREE.Group>; wallGroups: Map<AnyWall, THREE.Group>; slabs: Map<LivingWallId, { x0: number; x1: number; extra: Opening[] }>; trim: THREE.Material; skirting: THREE.Material; keep: Set<THREE.Material>; roomWall: (o: Opening, w: number, h: number) => THREE.Material };
 }
 
 /** 벽 프레임 → 그룹 (로컬 X = 벽 진행 방향, Z = 방 안쪽, Y 위, 원점 = 벽 시작 바닥) */
@@ -57,16 +67,19 @@ export function wallGroup(d: Design, w: WallId): THREE.Group {
 }
 
 function label(text: string, color: string): THREE.Sprite {
-  const c = document.createElement('canvas');
-  c.width = 256; c.height = 72;
-  const x = c.getContext('2d')!;
-  x.fillStyle = 'rgba(255,255,255,0.92)';
-  x.beginPath(); x.roundRect(4, 4, 248, 64, 18); x.fill();
-  x.strokeStyle = color; x.lineWidth = 4; x.stroke();
-  x.fillStyle = '#222'; x.font = 'bold 30px "Pretendard", "Malgun Gothic", sans-serif'; x.textAlign = 'center'; x.textBaseline = 'middle';
-  x.fillText(text, 128, 38);
-  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace;
-  const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: t, depthTest: false }));
+  const sm = mat(`label:${text}:${color}`, () => {
+    const c = document.createElement('canvas');
+    c.width = 256; c.height = 72;
+    const x = c.getContext('2d')!;
+    x.fillStyle = 'rgba(255,255,255,0.92)';
+    x.beginPath(); x.roundRect(4, 4, 248, 64, 18); x.fill();
+    x.strokeStyle = color; x.lineWidth = 4; x.stroke();
+    x.fillStyle = '#222'; x.font = 'bold 30px "Pretendard", "Malgun Gothic", sans-serif'; x.textAlign = 'center'; x.textBaseline = 'middle';
+    x.fillText(text, 128, 38);
+    const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace;
+    return new THREE.SpriteMaterial({ map: shared(t), depthTest: false });
+  });
+  const s = new THREE.Sprite(sm);
   s.scale.set(400, 113, 1);
   s.renderOrder = 10;
   return s;
@@ -115,29 +128,27 @@ export function buildRoom(d: Design, surf: { floor?: Surf; wallOf?: (space: Wall
 
   // 거실 — 트인 쪽 너머 직사각형 공간(T자). 맞은편 벽에 거실 창
   // free — 부엌 ↔ 거실 잇는 벽(날개벽 · 어깨): 양면이 다 보이고 트인 곳 쪽 끝(x0 = start · x1 = end)의 벽 두께 면이 드러난다 → 걸레받이를 뒷면 · 끝면까지 두른다
+  const ops = new Map<string, THREE.Group>(), wallGroups = new Map<AnyWall, THREE.Group>(), slabs = new Map<LivingWallId, { x0: number; x1: number; extra: Opening[] }>();
   const slab = (o: [number, number], dir: [number, number], x0: number, x1: number, id: number, holes: Opening[] = [], mat: THREE.Material = wmFor(x1 - x0, 'living', `l${id}`), free: 'start' | 'end' | null = null) => {
     const g = new THREE.Group();
     g.position.set(o[0] * S, 0, o[1] * S);
     g.rotation.y = Math.atan2(-dir[1], dir[0]);
     g.scale.setScalar(S);
-    const shape = new THREE.Shape();
-    shape.moveTo(x0, 0); shape.lineTo(x1, 0); shape.lineTo(x1, r.h); shape.lineTo(x0, r.h); shape.closePath();
-    for (const h of holes) shape.holes.push(holePath(h));
-    const geo = new THREE.ExtrudeGeometry(shape, { depth: WALL_T, bevelEnabled: false });
-    geo.translate(0, 0, -WALL_T);
-    // 벽지 UV = 벽 길이 · 높이로 0~1 (반복은 재질 repeat)
-    const uvs = geo.getAttribute('uv') as THREE.BufferAttribute;
-    for (let i = 0; i < uvs.count; i++) uvs.setXY(i, (uvs.getX(i) - x0) / (x1 - x0), uvs.getY(i) / r.h);
-    const mesh = new THREE.Mesh(geo, mat); mesh.castShadow = mesh.receiveShadow = true;
+    // 사용자가 이 거실 벽(맞은편 · 양옆)에 놓은 공간 요소 — 부엌 벽처럼 고르고 끈다(사용자 2026-11-10 「거실 공간에 공간요소가 배치 될 수 있도록해」)
+    const lid = id === 10 || id === 11 || id === 12 ? (id as LivingWallId) : null;
+    const own = lid != null ? d.openings.filter((op) => op.wall === lid) : [];
+    const mesh = new THREE.Mesh(slabGeo(r.h, x0, x1, [...holes, ...own]), mat); mesh.castShadow = mesh.receiveShadow = true;
     mesh.userData.wallId = id; mesh.name = `wall-l${id}`;
     g.add(mesh);
     const sk0 = Math.max(0, x0), sk1 = x1;
-    if (sk1 - sk0 > 20) g.add(box(sk1 - sk0, 70, 12, skirting, (sk0 + sk1) / 2, 35, 6));
+    g.add(...skirtingRun(sk0, sk1, [...holes, ...own], skirting));
     if (free && sk1 - sk0 > 20) {
       g.add(box(sk1 - sk0, 70, 12, skirting, (sk0 + sk1) / 2, 35, -WALL_T - 6));          // 뒷면
       g.add(box(12, 70, WALL_T + 24, skirting, free === 'start' ? x0 - 6 : x1 + 6, 35, -WALL_T / 2));                 // 벽 두께 끝면 — 양면 걸레받이 끝까지 감싼다
     }
     for (const h of holes) g.add(openingObj(d, h, trim, [], roomWall));
+    for (const h of own) { const og = openingObj(d, h, trim, pick, roomWall); ops.set(h.id, og); g.add(og); }
+    if (lid != null) { wallGroups.set(lid, g); slabs.set(lid, { x0, x1, extra: holes }); }
     group.add(g);
     return g;
   };
@@ -164,10 +175,10 @@ export function buildRoom(d: Design, surf: { floor?: Surf; wallOf?: (space: Wall
     lc.position.set(cl[0] * S, r.h * S, cl[1] * S); lc.name = 'ceiling'; lc.castShadow = lc.receiveShadow = true;
     group.add(lc);
     const push = (g: THREE.Group, id: number, n: [number, number], c: [number, number], keep = false) => walls.push({ wall: id as WallId, obj: g, n: new THREE.Vector3(n[0], 0, n[1]), p: new THREE.Vector3(c[0] * S, 0, c[1] * S), keep });
-    // 맞은편 벽 + 발코니형 거실 창
-    const ww = Math.min(LW - 1200, 4200);
-    const win: Opening = { id: 'living-window', kind: 'window', wall: d.openWall, t: (LW - ww) / 2, w: ww, h: Math.min(2100, r.h - 150), sill: 100 };
-    push(slab(P(-sa, -WALL_T - D), fd, -WALL_T, LW + WALL_T, 10, [win]), 10, fn, P(mid, -WALL_T - D));
+    // 맞은편 벽 + 발코니형 거실 창(그 자리에 사용자가 공간 요소를 놓으면 뺀다 — livingWindow)
+    const lw = livingWindow(d);
+    const win: Opening[] = lw ? [{ id: 'living-window', kind: 'window', wall: 10, ...lw }] : [];
+    push(slab(P(-sa, -WALL_T - D), fd, -WALL_T, LW + WALL_T, 10, win), 10, fn, P(mid, -WALL_T - D));
     // 옆벽 두 개
     push(slab(P(-sa, -WALL_T), neg(fn), -WALL_T, D + WALL_T, 11), 11, fd, P(-sa, -WALL_T - D / 2));
     push(slab(P(L + sb, -WALL_T - D), fn, -WALL_T, D + WALL_T, 12), 12, neg(fd), P(L + sb, -WALL_T - D / 2));
@@ -183,31 +194,13 @@ export function buildRoom(d: Design, surf: { floor?: Surf; wallOf?: (space: Wall
     if (w === d.openWall) continue;
     const L = wallLength(r, w);
     const g = wallGroup(d, w);
-    const shape = new THREE.Shape();
-    // 모서리를 벽 두께만큼 늘려 바깥 모서리가 맞물리게. 트인 쪽 끝은 거실 어깨 벽이 그 모서리를 채우므로 늘리지 않는다(겹침 방지)
-    // — 어깨 · 날개벽이 없으면(0) 모서리가 비므로 그때만 늘림
-    const lvs = livingOf(d);
-    const shoulderAtStart = prevWall(w) === d.openWall && lvs.b >= WALL_T;   // 이 벽 시작 = 트인 벽 끝(b 쪽) — 어깨가 벽 두께 이상이면 모서리를 덮는다
-    const shoulderAtEnd = nextWall(w) === d.openWall && lvs.a >= WALL_T;     // 이 벽 끝 = 트인 벽 시작(a 쪽)
-    const xs0 = shoulderAtStart ? 0 : -WALL_T, xs1 = shoulderAtEnd ? L : L + WALL_T;
-    shape.moveTo(xs0, 0); shape.lineTo(xs1, 0); shape.lineTo(xs1, r.h); shape.lineTo(xs0, r.h); shape.closePath();
-    const ops = d.openings.filter((o) => o.wall === w);
-    for (const o of ops) shape.holes.push(holePath(o));
-    const geo = new THREE.ExtrudeGeometry(shape, { depth: WALL_T, bevelEnabled: false });
-    geo.translate(0, 0, -WALL_T);
-    // 벽지 UV = mm 로 (바깥 면 포함 — 반복은 재질 repeat 대신 직접)
-    const uv = geo.getAttribute('uv') as THREE.BufferAttribute;
-    for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) / L, uv.getY(i) / r.h);
-    const mesh = new THREE.Mesh(geo, wmFor(L, 'kitchen', `k${w}`));
+    const mesh = new THREE.Mesh(wallGeo(d, w), wmFor(L, 'kitchen', `k${w}`));
     mesh.receiveShadow = true; mesh.castShadow = true;
     mesh.userData.wallId = w; mesh.name = `wall-k${w}`;
     g.add(mesh);
-    // 걸레받이 (문 · 통로 자리 비움)
-    let cur = 0;
-    const cuts = ops.filter((o) => o.sill < 100).map((o) => [o.t, o.t + o.w]).sort((a, b) => a[0] - b[0]);
-    for (const [c0, c1] of [...cuts, [L, L]]) { if (c0 - cur > 20) g.add(box(c0 - cur, 70, 12, skirting, (cur + c0) / 2, 35, 6)); cur = Math.max(cur, c1); }
-
-    for (const o of ops) g.add(openingObj(d, o, trim, pick, roomWall));
+    g.add(...skirtingOf(d, w, skirting));
+    for (const o of d.openings.filter((x) => x.wall === w)) { const og = openingObj(d, o, trim, pick, roomWall); ops.set(o.id, og); g.add(og); }
+    wallGroups.set(w, g);
     group.add(g);
     const f = wallFrame(r, w);
     walls.push({ wall: w, obj: g, n: new THREE.Vector3(f.n[0], 0, f.n[1]), p: new THREE.Vector3((f.o[0] + f.dir[0] * L / 2) * S, 0, (f.o[1] + f.dir[1] * L / 2) * S) });
@@ -225,13 +218,99 @@ export function buildRoom(d: Design, surf: { floor?: Surf; wallOf?: (space: Wall
     roof.name = 'roof-shadow'; roof.castShadow = true; roof.receiveShadow = false;
     group.add(roof);
   }
-  return { group, walls, pick };
+  return { group, walls, pick, live: { ops, wallGroups, slabs, trim, skirting, keep: new Set([wm, trim, skirting]), roomWall } };
+}
+
+/** 부엌 벽 판 — 개구부 자리 구멍. 모서리를 벽 두께만큼 늘려 바깥 모서리가 맞물리게. 트인 쪽 끝은 거실 어깨 벽이 그 모서리를 채우므로
+ *  늘리지 않는다(겹침 방지) — 어깨 · 날개벽이 없으면(0) 모서리가 비므로 그때만 늘림 */
+function wallGeo(d: Design, w: WallId): THREE.ExtrudeGeometry {
+  const r = d.room, L = wallLength(r, w), lvs = livingOf(d);
+  const shoulderAtStart = prevWall(w) === d.openWall && lvs.b >= WALL_T;   // 이 벽 시작 = 트인 벽 끝(b 쪽) — 어깨가 벽 두께 이상이면 모서리를 덮는다
+  const shoulderAtEnd = nextWall(w) === d.openWall && lvs.a >= WALL_T;     // 이 벽 끝 = 트인 벽 시작(a 쪽)
+  const xs0 = shoulderAtStart ? 0 : -WALL_T, xs1 = shoulderAtEnd ? L : L + WALL_T;
+  const shape = new THREE.Shape();
+  shape.moveTo(xs0, 0); shape.lineTo(xs1, 0); shape.lineTo(xs1, r.h); shape.lineTo(xs0, r.h); shape.closePath();
+  for (const o of d.openings) if (o.wall === w) shape.holes.push(holePath(o));
+  const geo = new THREE.ExtrudeGeometry(shape, { depth: WALL_T, bevelEnabled: false });
+  geo.translate(0, 0, -WALL_T);
+  // 벽지 UV = mm 로 (바깥 면 포함 — 반복은 재질 repeat 대신 직접)
+  const uv = geo.getAttribute('uv') as THREE.BufferAttribute;
+  for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) / L, uv.getY(i) / r.h);
+  return geo;
+}
+/** 걸레받이 — 문 · 통로 자리(창대 100 미만) 비움 */
+function skirtingOf(d: Design, w: WallId, mat: THREE.Material): THREE.Mesh[] {
+  return skirtingRun(0, wallLength(d.room, w), d.openings.filter((o) => o.wall === w), mat);
+}
+/** 걸레받이 — 벽 위 a ~ b 를, 문 · 통로 자리(창대 100 미만)는 비우고 */
+function skirtingRun(a: number, b: number, ops: { t: number; w: number; sill: number }[], mat: THREE.Material): THREE.Mesh[] {
+  const out: THREE.Mesh[] = [];
+  const cuts = ops.filter((o) => o.sill < 100).map((o) => [o.t, o.t + o.w]).sort((x, y) => x[0] - y[0]);
+  let cur = a;
+  for (const [c0, c1] of [...cuts, [b, b]]) { if (c0 - cur > 20) { const m = box(c0 - cur, 70, 12, mat, (cur + c0) / 2, 35, 6); m.name = 'skirting'; out.push(m); } cur = Math.max(cur, c1); }
+  return out;
+}
+/** 거실 벽 판 — x0 ~ x1, 개구부 자리 구멍. 벽지 UV = 벽 길이 · 높이로 0~1 (반복은 재질 repeat) */
+function slabGeo(h: number, x0: number, x1: number, holes: Opening[]): THREE.ExtrudeGeometry {
+  const shape = new THREE.Shape();
+  shape.moveTo(x0, 0); shape.lineTo(x1, 0); shape.lineTo(x1, h); shape.lineTo(x0, h); shape.closePath();
+  for (const o of holes) shape.holes.push(holePath(o));
+  const geo = new THREE.ExtrudeGeometry(shape, { depth: WALL_T, bevelEnabled: false });
+  geo.translate(0, 0, -WALL_T);
+  const uvs = geo.getAttribute('uv') as THREE.BufferAttribute;
+  for (let i = 0; i < uvs.count; i++) uvs.setXY(i, (uvs.getX(i) - x0) / (x1 - x0), uvs.getY(i) / h);
+  return geo;
+}
+/** 개구부를 끄는 동안 — 방을 통째로 다시 만들지 않고 그 개구부 묶음만 옮기고(폭이 바뀌면 그것만 다시) 닿은 벽 판 · 걸레받이만 다시 깎는다.
+ *  예전엔 끄는 동안 매 프레임 방 전체(벽 · 바닥 · 거실 · 벽 너머 공간 · 조명 · 그림자 맵)를 새로 만들고 놓아 끊겼다(사용자 2026-11-10
+ *  「공간요소 이동시에 끊김이 심한데 실시간으로 끊김없이」). 놓으면 예전처럼 방 전체를 다시 만든다(장 배치 · 타일 · 창 빛 · 라이트맵).
+ *  false = 이 방에 없는 개구부(다시 만들어야 함) */
+/** onWall — 다시 깎는 벽 판 · 다시 만드느라 놓는 메시마다 먼저 부른다(라이트맵 사본 떼기, scene.unbake) */
+export function liveOpening(room: RoomObj, d: Design, o: Opening, onWall?: (wall: THREE.Mesh) => void): boolean {
+  const L = room.live, g0 = L.ops.get(o.id), wg = L.wallGroups.get(o.wall);
+  if (!g0 || !wg) return false;
+  // 거실 맞은편 벽의 기본 창이 생기거나 빠질 때(그 자리로 끌어옴 · 벗어남)는 방을 다시 만든다
+  const sl10 = L.slabs.get(10);
+  if (sl10 && !!livingWindow(d) !== sl10.extra.length > 0) return false;
+  const b = g0.userData.built as Opening;
+  let g = g0;
+  if (o.w !== b.w || o.h !== b.h || o.sill !== b.sill || o.depth !== b.depth || o.door !== b.door) {
+    // 모양이 바뀜(폭 손잡이) — 그 개구부만 새로. 방이 같이 쓰는 재질(벽 · 몰딩)은 남긴다
+    const pk: THREE.Object3D[] = [];
+    g = openingObj(d, o, L.trim, pk, L.roomWall);
+    for (let i = room.pick.length - 1; i >= 0; i--) if (room.pick[i].userData.openingId === o.id) room.pick.splice(i, 1);
+    room.pick.push(...pk);
+    g0.removeFromParent();
+    // 라이트맵을 입은 메시(벽 너머 공간 천장 등)는 원래 재질로 되돌린 뒤 놓는다 — 사본을 놓으면 방 전체 라이트맵 텍스처까지 놓였다(검토 2026-11-10)
+    g0.traverse((x) => { if ((x as THREE.Mesh).isMesh) onWall?.(x as THREE.Mesh); });
+    disposeTree(g0, L.keep);
+    L.ops.set(o.id, g);
+  } else g.position.x = o.t - b.t;
+  if (g.parent !== wg) wg.add(g);
+  // 숨긴 벽(카메라 쪽) 상태를 옮겨 간 벽에 맞춘다 — 실시간 화면은 층(1 = 화면에서 숨김), 실사는 visible
+  // 벽 판의 표시를 본다 — 벽 너머 공간을 품은 벽 묶음은 묶음째 숨기지 않아(scene frame) 묶음 표시가 맞지 않는다. 표시(hid)도 같이 적어야 다음 숨기기가 건너뛰지 않는다
+  const wallMesh = (gw: THREE.Object3D) => gw.children.find((c) => c.name.startsWith('wall-'));
+  const hid = !!(wallMesh(wg) ?? wg).userData.hid;
+  g.traverse((c) => { c.layers.set(hid ? 1 : 0); c.userData.hid = hid; });
+  g.visible = true;
+  for (const w of new Set<AnyWall>([b.wall, o.wall])) {
+    const gw = L.wallGroups.get(w); if (!gw) continue;
+    const sl = isKitchenWall(w) ? null : L.slabs.get(w), on = d.openings.filter((x) => x.wall === w);
+    const mesh = gw.children.find((c) => c.name === (sl ? `wall-l${w}` : `wall-k${w}`)) as THREE.Mesh | undefined;
+    if (mesh) { onWall?.(mesh); const old = mesh.geometry; mesh.geometry = sl ? slabGeo(d.room.h, sl.x0, sl.x1, [...sl.extra, ...on]) : wallGeo(d, w as WallId); old.dispose(); }
+    for (const s of gw.children.filter((c) => c.name === 'skirting')) { s.removeFromParent(); (s as THREE.Mesh).geometry.dispose(); }
+    const sk = sl ? skirtingRun(Math.max(0, sl.x0), sl.x1, [...sl.extra, ...on], L.skirting) : skirtingOf(d, w as WallId, L.skirting);
+    if (sk.length) { gw.add(...sk); const h = !!(wallMesh(gw) ?? gw).userData.hid; for (const s of sk) { s.layers.set(h ? 1 : 0); s.userData.hid = h; } }
+  }
+  g.updateMatrixWorld(true);
+  return true;
 }
 
 /** 개구부 하나 — 문틀 · 문짝 / 창틀 · 유리 / 벽 너머 공간 */
 function openingObj(d: Design, o: Opening, trim: THREE.Material, pick: THREE.Object3D[], roomWall?: (o: Opening, w: number, h: number) => THREE.Material): THREE.Group {
   const g = new THREE.Group();
   g.userData.openingId = o.id;
+  g.userData.built = { ...o };   // 만든 때의 자리 · 크기 — 끄는 동안 옮긴 만큼만 밀기(liveOpening)
   const info = OPENING_INFO[o.kind];
   const c = o.t + o.w / 2;
   const th = 15;
@@ -249,8 +328,8 @@ function openingObj(d: Design, o: Opening, trim: THREE.Material, pick: THREE.Obj
     g.add(box(o.w, 12, WALL_T, trim, c, o.sill + 6, -WALL_T / 2));
     void th;
     // 바깥 틀 + 이중 미닫이 창짝(앞뒤로 엇갈림) — PVC 흰색
-    const pvc = new THREE.MeshStandardMaterial({ color: '#eceae6', roughness: 0.42 });
-    const glass = new THREE.MeshPhysicalMaterial({ color: '#cfe3f0', roughness: 0.05, transmission: 0.9, transparent: true, opacity: 0.22, ior: 1.5 });
+    const pvc = mat('pvc', () => new THREE.MeshStandardMaterial({ color: '#eceae6', roughness: 0.42 }));
+    const glass = mat('glass', () => new THREE.MeshPhysicalMaterial({ color: '#cfe3f0', roughness: 0.05, transmission: 0.9, transparent: true, opacity: 0.22, ior: 1.5 }));
     const fz = -WALL_T + 40, fw = 55, fd = 70;
     g.add(box(o.w, fw, fd, pvc, c, o.sill + fw / 2, fz));
     g.add(box(o.w, fw, fd, pvc, c, o.sill + o.h - fw / 2, fz));
@@ -263,7 +342,7 @@ function openingObj(d: Design, o: Opening, trim: THREE.Material, pick: THREE.Obj
       sash.add(box(sw, sf, 24, pvc, 0, ih / 2 - sf / 2, 0), box(sw, sf, 24, pvc, 0, -ih / 2 + sf / 2, 0));
       for (const x of [-sw / 2 + sf / 2, sw / 2 - sf / 2]) sash.add(box(sf, ih, 24, pvc, x, 0, 0));
       const gl = box(sw - sf * 2, ih - sf * 2, 5, glass, 0, 0, 0); gl.castShadow = false; gl.name = 'window-glass'; sash.add(gl);
-      sash.add(box(14, 120, 10, new THREE.MeshStandardMaterial({ color: '#c8c8c8', metalness: 0.6, roughness: 0.35 }), i ? -sw / 2 + sf / 2 : sw / 2 - sf / 2, 0, i ? 16 : 16));
+      sash.add(box(14, 120, 10, mat('sashHandle', () => new THREE.MeshStandardMaterial({ color: '#c8c8c8', metalness: 0.6, roughness: 0.35 })), i ? -sw / 2 + sf / 2 : sw / 2 - sf / 2, 0, i ? 16 : 16));
       g.add(sash);
     }
   } else {
@@ -277,19 +356,20 @@ function openingObj(d: Design, o: Opening, trim: THREE.Material, pick: THREE.Obj
       const leaf = new THREE.Group();
       leaf.position.set(o.t, 0, -WALL_T);
       leaf.rotation.y = 1.2; // 바깥쪽(로컬 -Z)으로
-      leaf.add(box(o.w - 10, o.h - 10, 40, new THREE.MeshStandardMaterial({ color: '#efece6', roughness: 0.45 }), o.w / 2, o.h / 2, -20));
-      leaf.add(box(20, 20, 140, new THREE.MeshStandardMaterial({ color: '#888', metalness: 0.8, roughness: 0.3 }), o.w - 90, 1000, -20));
+      leaf.add(box(o.w - 10, o.h - 10, 40, mat('doorLeaf', () => new THREE.MeshStandardMaterial({ color: '#efece6', roughness: 0.45 })), o.w / 2, o.h / 2, -20));
+      leaf.add(box(20, 20, 140, mat('doorMetal', () => new THREE.MeshStandardMaterial({ color: '#888', metalness: 0.8, roughness: 0.3 })), o.w - 90, 1000, -20));
       g.add(leaf);
     } else g.add(sideRoom(o, info.color, d.room.h, roomWall));
   }
   if (o.depth) {
     // 벽 너머 공간 이름 — 입구 위
     const lb = label(info.label, info.color);
+    lb.userData.roomPart = true;   // 공간과 같이 보인다(붙은 벽이 숨어도)
     lb.position.set(c, Math.min(o.sill + o.h + 200, 2300), -WALL_T - 200);
     g.add(lb);
   }
   // 고르기 · 끌기용 투명 상자 (개구부 자리)
-  const hit = new THREE.Mesh(new THREE.BoxGeometry(o.w, o.h, WALL_T + 80), new THREE.MeshBasicMaterial({ visible: false }));
+  const hit = new THREE.Mesh(new THREE.BoxGeometry(o.w, o.h, WALL_T + 80), mat('hit', () => new THREE.MeshBasicMaterial({ visible: false })));
   hit.position.set(c, o.sill + o.h / 2, -WALL_T / 2 + 40);
   hit.userData.openingId = o.id;
   g.add(hit); pick.push(hit);
@@ -300,27 +380,27 @@ function openingObj(d: Design, o: Opening, trim: THREE.Material, pick: THREE.Obj
 /** 벽 너머 공간 입구 문 — 여닫이(안쪽으로 70°) · 미닫이(두 짝, 한 짝 열림) · 폴딩(4짝 지그재그로 반쯤 접힘). 벽 로컬: x = 벽 따라, z- = 공간 쪽 */
 function entryDoor(o: Opening): THREE.Group {
   const g = new THREE.Group();
-  const mat = new THREE.MeshStandardMaterial({ color: '#efece6', roughness: 0.45 });
-  const metal = new THREE.MeshStandardMaterial({ color: '#888', metalness: 0.8, roughness: 0.3 });
+  const leafM = mat('doorLeaf', () => new THREE.MeshStandardMaterial({ color: '#efece6', roughness: 0.45 }));
+  const metal = mat('doorMetal', () => new THREE.MeshStandardMaterial({ color: '#888', metalness: 0.8, roughness: 0.3 }));
   const h = o.h - 10, type = o.door ?? 'swing';
   if (type === 'swing') {
     const leaf = new THREE.Group();
     leaf.position.set(o.t, 0, -WALL_T); leaf.rotation.y = 1.2;
-    leaf.add(box(o.w - 10, h, 40, mat, o.w / 2, h / 2, -20));
+    leaf.add(box(o.w - 10, h, 40, leafM, o.w / 2, h / 2, -20));
     leaf.add(box(20, 20, 140, metal, o.w - 90, 1000, -20));
     g.add(leaf);
   } else if (type === 'sliding') {
     // 레일 + 두 짝 — 오른쪽 짝을 왼쪽 짝 뒤로 밀어 반쯤 열림
     const pw = o.w / 2 + 30;
     g.add(box(o.w + 60, 40, 90, metal, o.t + o.w / 2, o.h + 20, -WALL_T - 45));
-    g.add(box(pw, h, 35, mat, o.t + pw / 2, h / 2, -WALL_T - 25));
-    g.add(box(pw, h, 35, mat, o.t + pw / 2 + 120, h / 2, -WALL_T - 70));
+    g.add(box(pw, h, 35, leafM, o.t + pw / 2, h / 2, -WALL_T - 25));
+    g.add(box(pw, h, 35, leafM, o.t + pw / 2 + 120, h / 2, -WALL_T - 70));
     for (const x of [o.t + pw - 60, o.t + pw + 60]) g.add(box(20, 300, 25, metal, x, 1000, -WALL_T - 5));
   } else {
     // 폴딩 — 양쪽 문틀에서 두 짝씩 지그재그(60°)로 접힘. 짝의 이음은 경첩
     const pw = o.w / 4, th = 0.8;
     const panel = (ax: number, az: number, bx: number, bz: number) => {
-      const p = box(Math.hypot(bx - ax, bz - az), h, 28, mat, 0, h / 2, 0);
+      const p = box(Math.hypot(bx - ax, bz - az), h, 28, leafM, 0, h / 2, 0);
       p.position.set((ax + bx) / 2, h / 2, (az + bz) / 2);
       p.rotation.y = Math.atan2(-(bz - az), bx - ax);
       g.add(p);
@@ -338,14 +418,18 @@ function entryDoor(o: Opening): THREE.Group {
 function sideRoom(o: Opening, color: string, H = 2400, roomWall?: (o: Opening, w: number, h: number) => THREE.Material): THREE.Group {
   const g = new THREE.Group();
   const D = o.depth ?? 1500, Wd = o.w + 600, x0 = o.t - 300, z0 = -WALL_T;
-  const fl = new THREE.MeshStandardMaterial({ color: '#d9d2c6', roughness: 0.8 });
-  const wl0 = new THREE.MeshStandardMaterial({ color: '#f3f1ec', roughness: 0.95 });
+  const fl = mat('sideFloor', () => new THREE.MeshStandardMaterial({ color: '#d9d2c6', roughness: 0.8 }));
+  const wl0 = mat('sideWall', () => new THREE.MeshStandardMaterial({ color: '#f3f1ec', roughness: 0.95 }));
   const wlc = new Map<string, THREE.Material>();
   // 벽 판마다 크기에 맞춘 반복 — 기본 페인트면 하나 재질 그대로
   const wlOf = (w: number, h: number) => { if (!roomWall) return wl0; const k = `${Math.round(w)}x${Math.round(h)}`; let m = wlc.get(k); if (!m) wlc.set(k, (m = roomWall(o, w, h))); return m; };
-  const fm = box(Wd, 10, D, fl, x0 + Wd / 2, -5, z0 - D / 2); fm.castShadow = false; g.add(fm);
+  // 붙은 벽과 따로 숨긴다(scene frame) — 카메라가 그 부엌 벽 바깥이어도 공간은 보이고, 이 공간의 세 벽만 각각 카메라 쪽이면 숨는다.
+  // 예전엔 부엌 벽 묶음에 통째로 들어 있어 위 · 바깥에서 보면 공간이 사라졌다(사용자 2026-11-11). roomWall = 안쪽 면 점 · 안쪽 법선(벽 로컬 mm)
+  g.userData.sideRoom = true;
+  const inner = (m: THREE.Object3D, n: [number, number], p: [number, number]) => { m.userData.roomWall = { n, p }; return m; };
+  const fm = box(Wd, 10, D, fl, x0 + Wd / 2, -5, z0 - D / 2); fm.castShadow = false; fm.userData.roomFloor = true; g.add(fm);
   // 천장 — 공간 바닥과 같은 크기(벽 두께 통로 포함)에 방 천장 높이. 예전엔 천장이 없어 위가 뚫려 보였다
-  const cl = new THREE.Mesh(new THREE.PlaneGeometry(Wd + 2 * WALL_T, D + 2 * WALL_T), ceilMat());
+  const cl = new THREE.Mesh(new THREE.PlaneGeometry(Wd + 2 * WALL_T, D + 2 * WALL_T), mat('sideCeil', ceilMat));
   cl.rotation.x = Math.PI / 2; cl.position.set(x0 + Wd / 2, H, z0 + WALL_T - (D + 2 * WALL_T) / 2); cl.name = 'ceiling'; cl.castShadow = cl.receiveShadow = true;
   g.add(cl);
   // 천장 조명 하나 — 지금은 끔(CEILING_LAMPS)
@@ -354,13 +438,14 @@ function sideRoom(o: Opening, color: string, H = 2400, roomWall?: (o: Opening, w
     // 맞은편 벽 — 창 자리(가운데 1200 × 900, 높이 1100~2000)를 비워 쌓음
     const ww = Math.min(1200, Wd - 400), wx = x0 + Wd / 2, zw = z0 - D - WALL_T / 2, full = Wd + 2 * WALL_T;
     const lw = (full - ww) / 2;
-    g.add(box(lw, H, WALL_T, wlOf(lw, H), x0 - WALL_T + lw / 2, H / 2, zw), box(lw, H, WALL_T, wlOf(lw, H), x0 + Wd + WALL_T - lw / 2, H / 2, zw));
-    g.add(box(ww, 1100, WALL_T, wlOf(ww, 1100), wx, 550, zw), box(ww, H - 2000, WALL_T, wlOf(ww, H - 2000), wx, (2000 + H) / 2, zw));
-  } else g.add(box(Wd + 2 * WALL_T, H, WALL_T, wlOf(Wd + 2 * WALL_T, H), x0 + Wd / 2, H / 2, z0 - D - WALL_T / 2));
-  g.add(box(WALL_T, H, D, wlOf(D, H), x0 - WALL_T / 2, H / 2, z0 - D / 2));
-  g.add(box(WALL_T, H, D, wlOf(D, H), x0 + Wd + WALL_T / 2, H / 2, z0 - D / 2));
-  const white = new THREE.MeshStandardMaterial({ color: '#f6f5f2', roughness: 0.6 });
-  const accent = new THREE.MeshStandardMaterial({ color, roughness: 0.6 });
+    const back = (m: THREE.Object3D) => inner(m, [0, 1], [wx, z0 - D]);
+    g.add(back(box(lw, H, WALL_T, wlOf(lw, H), x0 - WALL_T + lw / 2, H / 2, zw)), back(box(lw, H, WALL_T, wlOf(lw, H), x0 + Wd + WALL_T - lw / 2, H / 2, zw)));
+    g.add(back(box(ww, 1100, WALL_T, wlOf(ww, 1100), wx, 550, zw)), back(box(ww, H - 2000, WALL_T, wlOf(ww, H - 2000), wx, (2000 + H) / 2, zw)));
+  } else g.add(inner(box(Wd + 2 * WALL_T, H, WALL_T, wlOf(Wd + 2 * WALL_T, H), x0 + Wd / 2, H / 2, z0 - D - WALL_T / 2), [0, 1], [x0 + Wd / 2, z0 - D]));
+  g.add(inner(box(WALL_T, H, D, wlOf(D, H), x0 - WALL_T / 2, H / 2, z0 - D / 2), [1, 0], [x0, z0 - D / 2]));
+  g.add(inner(box(WALL_T, H, D, wlOf(D, H), x0 + Wd + WALL_T / 2, H / 2, z0 - D / 2), [-1, 0], [x0 + Wd, z0 - D / 2]));
+  const white = mat('white', () => new THREE.MeshStandardMaterial({ color: '#f6f5f2', roughness: 0.6 }));
+  const accent = mat(`accent${color}`, () => new THREE.MeshStandardMaterial({ color, roughness: 0.6 }));
   if (o.kind === 'pantry') {
     // ㄷ자 선반
     for (const y of [400, 800, 1200, 1600, 2000]) {
@@ -371,9 +456,9 @@ function sideRoom(o: Opening, color: string, H = 2400, roomWall?: (o: Opening, w
     for (let i = 0; i < 6; i++) g.add(box(140, 180, 140, accent, x0 + 250 + i * 220, 400 + 100, z0 - D + 150));
   } else if (o.kind === 'utility') {
     // 다용도실 — 타일 바닥 · 바깥 창 · 세탁기 위 건조기 · 세탁 싱크장 · 선반 · 폴딩 도어
-    fm.material = new THREE.MeshStandardMaterial({ color: '#c9c6bf', roughness: 0.7 });
-    const app = new THREE.MeshStandardMaterial({ color: '#e7e8ea', roughness: 0.35, metalness: 0.1 });
-    const dark = new THREE.MeshStandardMaterial({ color: '#2d3136', roughness: 0.2, metalness: 0.3 });
+    fm.material = mat('utilFloor', () => new THREE.MeshStandardMaterial({ color: '#c9c6bf', roughness: 0.7 }));
+    const app = mat('app', () => new THREE.MeshStandardMaterial({ color: '#e7e8ea', roughness: 0.35, metalness: 0.1 }));
+    const dark = mat('dark', () => new THREE.MeshStandardMaterial({ color: '#2d3136', roughness: 0.2, metalness: 0.3 }));
     const zb = z0 - D;
     for (const y of [425, 425 + 860]) {
       g.add(box(650, 850, 650, app, x0 + 400, y, zb + 360));
@@ -383,12 +468,12 @@ function sideRoom(o: Opening, color: string, H = 2400, roomWall?: (o: Opening, w
     const sw = Math.max(600, Wd - 950);
     g.add(box(sw, 850, 600, white, x0 + 800 + sw / 2, 425, zb + 310));                 // 세탁 싱크장
     g.add(box(sw, 30, 620, accent, x0 + 800 + sw / 2, 865, zb + 320));
-    g.add(box(Math.min(500, sw - 100), 8, 380, new THREE.MeshStandardMaterial({ color: '#9aa0a6', metalness: 0.8, roughness: 0.25 }), x0 + 800 + sw / 2, 882, zb + 300));
+    g.add(box(Math.min(500, sw - 100), 8, 380, mat('sinkMetal', () => new THREE.MeshStandardMaterial({ color: '#9aa0a6', metalness: 0.8, roughness: 0.25 })), x0 + 800 + sw / 2, 882, zb + 300));
     for (const y of [1500, 1850]) g.add(box(sw, 20, 300, white, x0 + 800 + sw / 2, y, zb + 160));   // 선반
     // 바깥 창 (맞은편 벽)
     const ww = Math.min(1200, Wd - 400), wy = 1100;
-    const pvc = new THREE.MeshStandardMaterial({ color: '#eceae6', roughness: 0.42 });
-    const glass = new THREE.MeshPhysicalMaterial({ color: '#cfe3f0', roughness: 0.05, transmission: 0.9, transparent: true, opacity: 0.22 });
+    const pvc = mat('pvc', () => new THREE.MeshStandardMaterial({ color: '#eceae6', roughness: 0.42 }));
+    const glass = mat('utilGlass', () => new THREE.MeshPhysicalMaterial({ color: '#cfe3f0', roughness: 0.05, transmission: 0.9, transparent: true, opacity: 0.22 }));
     const wx = x0 + Wd / 2;
     g.add(box(ww, 50, 60, pvc, wx, wy, zb - 20), box(ww, 50, 60, pvc, wx, wy + 900, zb - 20));
     for (const x of [wx - ww / 2 + 25, wx, wx + ww / 2 - 25]) g.add(box(50, 900, 60, pvc, x, wy + 450, zb - 20));
@@ -400,7 +485,7 @@ function sideRoom(o: Opening, color: string, H = 2400, roomWall?: (o: Opening, w
     g.add(box(Wd, 870, 600, white, x0 + Wd / 2, 435, z0 - D + 300));
     g.add(box(Wd, 30, 620, accent, x0 + Wd / 2, 885, z0 - D + 310));
     g.add(box(Wd, 720, 340, white, x0 + Wd / 2, 1530 + 360, z0 - D + 170));
-    g.add(box(500, 10, 400, new THREE.MeshStandardMaterial({ color: '#9aa0a6', metalness: 0.8, roughness: 0.25 }), x0 + Wd / 2, 901, z0 - D + 300));
+    g.add(box(500, 10, 400, mat('sinkMetal', () => new THREE.MeshStandardMaterial({ color: '#9aa0a6', metalness: 0.8, roughness: 0.25 })), x0 + Wd / 2, 901, z0 - D + 300));
   }
   return g;
 }

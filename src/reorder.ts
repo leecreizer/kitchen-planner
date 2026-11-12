@@ -53,11 +53,48 @@ export const byPriority = (list: Item[], grow = false) => list.map((x, i) => ({ 
 /** 휠라 폭 30 ~ 150 — 원본 휠라 모델은 30 미만이면 부품 일부가 고정 폭으로 남아 옆 장과 겹친다(폭 10 이 유로 하부 57 · 키친바흐 35 ·
  *  유로 상부 132mm 로 그려짐, 실측 2026-11-06). 최소 30(사용자 2026-11-09, 예전 10) */
 export const FILL_MAX = 150, FILL_MIN = 30;
+/** 옆 장들이 폭 차이 rem 을 받는 계획(rem > 0 = 옆 장들이 그만큼 커져야, < 0 = 줄어야) — 사용자 2026-11-11 「모든 장은 정규격 사이즈로 크기를 맞추고
+ *  휠라로 조절이 안될때 배치룰 순서대로 장의 사이즈를 조절한다」.
+ *  ① 휠라(30 ~ 150)가 먼저 받는다(가까운 것부터 — near 순서). 줄 끝이 벽이면(endFill) 그 끝에 새 휠라를 둘 수 있어 — 남은 차이가 그 범위면 장은 그대로 두고
+ *     나머지로 돌려준다(부르는 쪽이 벽 끝 휠라를 만든다)
+ *  ② 남으면 장 하나를 배치 규칙 순서(byPriority — 줄일 때 여닫이 → 조리 → 서랍 → 싱크 · 쿡탑, 키울 때 반대, 식세는 늘 마지막)로 다른 정규격 폭으로 —
+ *     남는 차이를 휠라가 다시 받을 수 있는 폭 중 바뀌는 폭이 가장 작은 것. 하나로 안 되면 두 장 조합
+ *  ③ 그래도 안 맞으면 마지막으로 규칙 순서대로 비규격 범위(info.range)에서. 돌려줌 = 새 폭 · 못 받은 나머지 */
+export function planWidths(near: Item[], rem: number, info: (x: Item) => { fill: boolean; std: number[]; range: [number, number] | null }, endFill: [number, number] | null = null): { plan: Map<Item, number>; rem: number } {
+  const plan = new Map<Item, number>(), cur = (x: Item) => plan.get(x) ?? x.w;
+  const fills = near.filter((x) => info(x).fill), cabs = near.filter((x) => !info(x).fill && info(x).range);
+  const fr = (x: Item) => info(x).range ?? [FILL_MIN, FILL_MAX];
+  const absorb = () => { for (const x of fills) { if (!rem) break; const [lo, hi] = fr(x), nw = Math.max(lo, Math.min(hi, cur(x) + rem)); if (nw !== cur(x)) { rem -= nw - cur(x); plan.set(x, nw); } } };
+  const cap = () => fills.reduce((s, x) => { const [lo, hi] = fr(x); return { grow: s.grow + hi - cur(x), shrink: s.shrink + cur(x) - lo }; }, { grow: 0, shrink: 0 });
+  const fits = (r: number) => { const c = cap(); return (r >= -c.shrink && r <= c.grow) || (!!endFill && r > c.grow && r - c.grow >= endFill[0] && r - c.grow <= endFill[1]); };
+  const toEnd = () => !!endFill && rem >= endFill[0] && rem <= endFill[1];
+  absorb();
+  if (!rem || toEnd()) return { plan, rem };
+  const order = byPriority(cabs, rem > 0);
+  const opts = (x: Item) => { const [lo, hi] = info(x).range!; return info(x).std.filter((w) => w !== cur(x) && w >= lo && w <= hi); };
+  // ② 장 하나
+  for (const x of order) {
+    const best = opts(x).filter((w) => fits(rem - (w - cur(x)))).sort((a, b) => Math.abs(a - cur(x)) - Math.abs(b - cur(x)))[0];
+    if (best != null) { rem -= best - cur(x); plan.set(x, best); absorb(); return { plan, rem }; }
+  }
+  // ② 두 장 조합 — 규칙 순서가 앞선 짝부터, 같은 짝 안에선 바뀌는 폭 합이 작은 것
+  for (let i = 0; i < order.length; i++) for (let j = i + 1; j < order.length; j++) {
+    const a = order[i], b = order[j];
+    let pick: [number, number] | null = null, dsum = Infinity;
+    for (const wa of opts(a)) for (const wb of opts(b)) { const r = rem - (wa - cur(a)) - (wb - cur(b)), ds = Math.abs(wa - cur(a)) + Math.abs(wb - cur(b)); if (fits(r) && ds < dsum) { dsum = ds; pick = [wa, wb]; } }
+    if (pick) { rem -= pick[0] - cur(a) + pick[1] - cur(b); plan.set(a, pick[0]); plan.set(b, pick[1]); absorb(); return { plan, rem }; }
+  }
+  // ③ 비규격 — 규칙 순서대로 범위 안에서(벽 끝 새 휠라 몫은 남긴다)
+  for (const x of order) { if (!rem) break; const [lo, hi] = info(x).range!, nw = Math.max(lo, Math.min(hi, cur(x) + rem)); if (nw !== cur(x)) { rem -= nw - cur(x); plan.set(x, nw); } }
+  absorb();
+  return { plan, rem };
+}
 export interface NudgePlan { w: Map<Item, number>; t: Map<Item, number>; add: Item[]; remove: Item[] }
 /** 미리 단위로 옮기기 — 줄 길이는 그대로, 한쪽은 delta 만큼 늘고 다른 쪽은 줄어든다.
  *  각 쪽에서 휠라류가 먼저 받고(0 ~ 150), 넘치거나 모자라면 가까운 장부터 하나씩 100 단위로 크기를 바꾼다(그 장 범위를 넘으면 다음 장).
  *  휠라는 30 ~ 150. 없는데 남는 폭이 있으면 줄 끝(벽 쪽)에 새로 넣고, 0 이 되면 뺀다. 안 되면 null */
-export function nudge(group: Item[], it: Item, delta: number, range: (x: Item) => [number, number] | null, makeFill: (w: number) => Item, fillOk: [boolean, boolean] = [true, true]): NudgePlan | null {
+export function nudge(group: Item[], it: Item, delta: number, range: (x: Item) => [number, number] | null, makeFill: (w: number) => Item, fillOk: [boolean, boolean] = [true, true],
+  swap?: (x: Item, w: number) => string | null): NudgePlan | null {
   const i = group.indexOf(it);
   if (i < 0 || !delta) return null;
   const plan: NudgePlan = { w: new Map(), t: new Map(), add: [], remove: [] };
@@ -74,7 +111,17 @@ export function nudge(group: Item[], it: Item, delta: number, range: (x: Item) =
         const nw = Math.max(r[0], Math.min(r[1], x.w + rem));
         if (nw !== x.w) { plan.w.set(x, nw); rem -= nw - x.w; }
       }
-      return rem ? null : list.slice();
+      // 범위를 넘으면 짝 장(1도어 ↔ 2도어 등, swap)으로 바꿔 받는다 — 장 사이에 휠라를 두지 않는다(사용자 2026-11-09)
+      const out = list.slice();
+      for (const x of rem && swap ? byPriority(list, rem > 0) : []) {
+        if (isFill(x)) continue;
+        const w = (plan.w.get(x) ?? x.w) + rem, k = swap!(x, w);
+        if (!k) continue;
+        const nx: Item = { ...x, key: k, w };
+        plan.w.delete(x); plan.remove.push(x); plan.add.push(nx); out[out.indexOf(x)] = nx;
+        rem = 0; break;
+      }
+      return rem ? null : out;
     }
     const fills = list.filter(isFill), F = fills.reduce((s, x) => s + x.w, 0), tot = F + d;
     // 줄어드는 쪽(d < 0) — 휠라가 먼저, 모자라면 장이 100 단위로.

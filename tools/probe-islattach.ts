@@ -4,7 +4,8 @@ import { autoPlan } from '../src/autoplan';
 import { defaultDesign, wallFrame, wallLength, type Design, type WallId } from '../src/plan';
 setReader(async (p) => JSON.parse(readFileSync(`public/kjl/${p}`, 'utf-8')));
 const cat = await loadCatalog();
-const base = defaultDesign();
+// 냉장고 1도어 2대(2026-11-11 기본이 4도어로 바뀌기 전 기준) — 이 시험의 아일랜드 끌기 자리가 그 배치를 전제로 짜여 있다. 4도어에서 벽 끝으로 끈 아일랜드가 코너장 없이 닿는 경우는 따로 남은 일
+const base = { ...defaultDesign(), fridgeKind: 'twin' } as ReturnType<typeof defaultDesign>;
 const c0 = autoPlan({ ...base, island: true } as Design, cat, 'EO')[0];
 console.log('walls', c0.walls, 'island', c0.island && { cx: c0.island.cx, cz: c0.island.cz, rot: c0.island.rot });
 let bad = 0, tot = 0;

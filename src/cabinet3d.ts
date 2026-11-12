@@ -76,6 +76,8 @@ export interface DoorPart {
   amt: number;
   /** 최대로 열 만큼 — 각(라디안) 또는 서랍은 1(= amt 전부). 충돌 검사가 줄인다 */
   max: number;
+  /** 문 열기 단추와 상관없이 늘 연 채로(카페장 · 폴딩장 류 — 사용자 2026-11-11) */
+  always?: boolean;
 }
 
 export interface BuiltModule {
@@ -163,12 +165,13 @@ export async function buildModule(m: ModuleDef, w: number, door?: { var: string;
       const mk = p.texture ?? p.color;
       const prodName = p.texture ? kjlCatalog.product?.(p.texture)?.name ?? '' : '';
       names.set(mk, prodName);
+      // 폴딩 상부장의 「없음」 앞판(키친바흐 WF폴딩2 — 원본에 열림 방향이 없다)은 위로 여는 플랩으로(2026-11-12 — 문 열기 단추에 안 열렸다)
       // 문짝 — 좌 · 우 · 상 · 하 는 여닫이, 서랍장의 「없음」 앞판은 서랍. 「없음」이어도 도어 형태(DP)가 좌 · 우면
       // 그쪽 경첩(빌트인 냉장고장 도어) — 가운데(2 · 5)는 아래에서 같은 장의 좌 · 우 도어를 따르거나 고정(코너 휠라 · 식세 · 오븐 판)
       const dr = p.door && (p.door.dir <= 3 || p.door.dir === 4) ? p.door : undefined;
       if (dr) {
         add(dr.id, mk, g0);
-        if (!doorInfo.has(dr.id)) doorInfo.set(dr.id, { dir: dr.dir === 4 && !isDrawer ? (DP_SWING.test(m.key) ? dpSide(dr.info?.DP) : -1) : dr.dir, box: dr.box.clone().applyMatrix4(K2L) });
+        if (!doorInfo.has(dr.id)) doorInfo.set(dr.id, { dir: dr.dir === 4 && !isDrawer ? (DP_SWING.test(m.key) ? dpSide(dr.info?.DP) : m.key === 'wallFold' ? 2 : -1) : dr.dir, box: dr.box.clone().applyMatrix4(K2L) });
       } else if (isDrawer && /서랍/.test(prodName)) loose.push({ mk, g: g0 }); // 서랍 몸통 — 높이로 앞판에 붙인다
       else add('', mk, g0);
       // 가장 앞에 있는 텍스처 면 = 도어

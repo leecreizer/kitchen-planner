@@ -7,8 +7,9 @@
 import type { KitchenCatalog, ModuleDef, Series } from './kjlLib';
 import { byPriority, FILL_MAX, FILL_MIN, nudge, rowGroup, widenThinFills } from './reorder';
 import { applianceOf, hoodKindOf } from './catalog';
+import { sideGaps } from './clearance';
 import {
-  OPENING_INFO, nextWall, prevWall, viewWalls, wallFrame, wallLength, wallName, wallPoint,
+  OPENING_INFO, cabSpan, clearOf, isKitchenWall, nextWall, prevWall, viewWalls, wallFrame, wallLength, wallName, wallPoint,
   WANT_LABEL, type Design, type LayoutKind, type Opening, type Room, type StyleKind, type WallId, ISLAND_TABLE, type IslandStyle,
 } from './plan';
 
@@ -75,14 +76,15 @@ interface Run {
 export const PANTRY_W = 1000;
 const frameOf = (r: Room, w: WallId): Frame => { const f = wallFrame(r, w); return { o: f.o as [number, number], dir: f.dir as [number, number], n: f.n as [number, number] }; };
 
-function makeRuns(room: Room, walls: WallId[], openings: Opening[] = [], notes: string[] = [], fridgeAt?: Design['fridgeAt'], openWall?: WallId | null, fridgeD = 720, pantry = false, runLen?: Design['runLen']): Run[] {
+function makeRuns(room: Room, walls: WallId[], openings: Opening[] = [], notes: string[] = [], fridgeAt?: Design['fridgeAt'], openWall?: WallId | null, fridgeD = 720, pantry = false, runLen?: Design['runLen'], span?: (w: WallId) => [number, number], cornerFlip?: Design['cornerFlip']): Run[] {
   const front = viewWalls(openWall).front;
   const viewName = (w: WallId) => wallName(openWall, w);
   const set = new Set(walls);
   const runs = new Map<WallId, Run>();
   for (const w of walls) {
-    const L = wallLength(room, w);
-    runs.set(w, { wall: w, frame: frameOf(room, w), L, a: 0, b: L, wa: 0, wb: L });
+    // 장 놓을 구간 — 트인 쪽 끝은 거실 어깨 벽 두께까지(cabSpan). L 은 줄 끝(트인 쪽이 끝이면 두께 포함), a 는 시작(트인 쪽이 시작이면 -150)
+    const [lo, hi] = span ? span(w) : [0, wallLength(room, w)];
+    runs.set(w, { wall: w, frame: frameOf(room, w), L: hi, a: lo, b: hi, wa: lo, wb: hi });
   }
   let pantryLeft = pantry;
   for (const w of walls) {
@@ -92,7 +94,9 @@ function makeRuns(room: Room, walls: WallId[], openings: Opening[] = [], notes: 
     // 냉장고장을 이 코너 쪽 끝으로 골랐으면 — 냉장고가 코너에 서고 옆 줄은 냉장고 깊이(+EP)만큼 비움 (빌트인 냉장고장은 장 깊이 600 + EP)
     const FD = fridgeD;
     // 코너는 정면 벽 줄이 맡는다(정면장 우선) — 정면이 아닌 코너만 긴 벽 쪽. 옆 벽은 코너 깊이만큼 비우고 시작
-    const onA = A.wall === front ? true : B.wall === front ? false : A.L >= B.L;
+    // 사용자가 그 코너를 뒤집었으면(cornerFlip) 반대쪽 벽 줄이 맡는다 — 코너장 좌 ↔ 우
+    const onA0 = A.wall === front ? true : B.wall === front ? false : A.L >= B.L;
+    const onA = cornerFlip?.[`${A.wall}-${B.wall}`] ? !onA0 : onA0;
     // 냉장고장을 이 코너 쪽 끝으로 골랐으면 —
     //  · 코너를 맡은 줄(정면)이면 냉장고가 코너에 서고 옆 줄은 냉장고 깊이(+EP)만큼 비움
     //  · 옆 줄이면 코너는 그대로 정면 줄 코너장, 냉장고는 옆 줄의 비운 코너 바로 뒤 (정면 배치 → 코너장 → 측면, 사용자 원칙)
@@ -156,9 +160,11 @@ function makeRuns(room: Room, walls: WallId[], openings: Opening[] = [], notes: 
     const cS = set.has(prevWall(w)), cE = set.has(nextWall(w));
     if (cS && cE) continue;                          // 양 끝이 코너 — 자를 쪽이 없다
     const fromEnd = cS ? false : cE ? true : cfg.from === 'end';
-    if (!fromEnd) { const len = Math.max(r.a + 600, Math.min(r.L, cfg.len)); if (len < r.b) { r.b = len; r.wb = Math.min(r.wb, len); } }
-    else { const len = Math.max(r.L - r.b + 600, Math.min(r.L, cfg.len)); if (r.L - len > r.a) { r.a = r.L - len; r.wa = Math.max(r.wa, r.L - len); } }
-    if (r.b - r.a < r.L - 1) notes.push(`${viewName(w)} 장은 벽 ${r.L}mm 중 ${Math.round(fromEnd ? r.L - r.a : r.b)}mm 까지만 — 입력한 장 배치 길이`);
+    // 길이는 장 놓을 전체 구간(트인 쪽 두께 포함, cabSpan) 기준 — 시작이 -150 인 벽도 그 끝에서 잰다
+    const [lo, hi] = span ? span(w) : [0, r.L], full = hi - lo, len = Math.min(full, cfg.len);
+    if (!fromEnd) { const e = Math.max(r.a + 600, lo + len); if (e < r.b) { r.b = e; r.wb = Math.min(r.wb, e); } }
+    else { const s0 = Math.min(r.b - 600, hi - len); if (s0 > r.a) { r.a = s0; r.wa = Math.max(r.wa, s0); } }
+    if (r.b - r.a < full - 1) notes.push(`${viewName(w)} 장은 벽 ${full}mm 중 ${Math.round(fromEnd ? hi - r.a : r.b - lo)}mm 까지만 — 입력한 장 배치 길이`);
   }
   return walls.map((w) => runs.get(w)!);
 }
@@ -297,7 +303,7 @@ function planOne(d: Design, cat: KitchenCatalog, series: Series, v: Variant, use
   const W = (k: string) => widthsOf(mods(k));
   const items: Item[] = [], counters: Counter[] = [], splashes: Splash[] = [];
   const reasons: string[] = [], warnings: string[] = [];
-  const runs = makeRuns(room, v.walls, d.openings, reasons, useFix ? d.fridgeAt : undefined, d.openWall, d.fridgeKind === 'builtin' ? BASE_D + 20 : fridgeSpec(d).d + FRIDGE_GAP_BACK, !!v.pantry && !!mods('pantryCorner'), d.runLen);
+  const runs = makeRuns(room, v.walls, d.openings, reasons, useFix ? d.fridgeAt : undefined, d.openWall, d.fridgeKind === 'builtin' ? BASE_D + 20 : fridgeSpec(d).d + FRIDGE_GAP_BACK, !!v.pantry && !!mods('pantryCorner'), d.runLen, (w) => cabSpan(d, w), d.cornerFlip);
   const P = (f: Frame, t: number, u: number): [number, number] => [f.o[0] + f.dir[0] * t + f.n[0] * u, f.o[1] + f.dir[1] * t + f.n[1] * u];
   const dot = (a: [number, number], b: [number, number]) => a[0] * b[0] + a[1] * b[1];
   const near = (x: number, y: number) => Math.abs(x - y) < 1;
@@ -334,9 +340,19 @@ function planOne(d: Design, cat: KitchenCatalog, series: Series, v: Variant, use
   // 아일랜드 형태 — 고르지 않았으면 스타일 따라(수납 많이 = 양면)
   const islStyle: IslandStyle = d.islandCfg.style ?? (d.style === 'storage' ? 'double' : 'basic');
   const twoSided = islStyle === 'double';
-  const aisle = 1100;
+  // 통로 기준 — 오른쪽 패널에서 고친다(clearOf, 기본 정면 장 ↔ 아일랜드 1,200 · 끝 900). 예전엔 1,100 · 900 고정
+  const clear = clearOf(d);
+  const aisle = clear.front;
   /** 아일랜드 끝과 옆 줄(ㄷ자 · ㄱ자 팔) 상판 사이 통로 */
-  const islandPass = 900;
+  const islandPass = clear.end;
+  /** 쿡탑을 아일랜드로 옮긴 배치 — 아일랜드는 기준(1,800) 이상 */
+  const hobOnIsland = useFix && !!d.fix?.hob?.island;
+  /** 싱크장을 아일랜드로 옮긴 배치(사용자 2026-11-10 「아일랜드 싱크 추가」) — 식기세척기는 따로 옮기지 않았으면 싱크 옆으로 같이 */
+  const sinkOnIsland = useFix && !!d.fix?.sink?.island;
+  const dishOnIsland = !!st.dish && (useFix && d.fix?.dish ? !!d.fix.dish.island : sinkOnIsland);
+  const sinkW = W('sink').includes(1000) ? 1000 : W('sink')[0] ?? 1000;
+  /** 아일랜드에 들어갈 고정 장 폭 합 — 싱크(+ 식세) · 쿡탑 · 둘 다면 사이 300 · 양끝 EP */
+  const islFixLen = (sinkOnIsland ? sinkW : 0) + (dishOnIsland ? 600 : 0) + (hobOnIsland ? 900 : 0) + (sinkOnIsland && hobOnIsland ? 300 : 0) + 40;
   // 연계형 · 원형 식탁 — 붙지 않은 끝(기본 t = len 쪽)에 이만큼 더 나간다. 자리 잡을 때 그 길이까지 방 안 · 줄 안으로
   const tableExt = islStyle === 'table' ? ISLAND_TABLE.len : islStyle === 'round' ? ISLAND_TABLE.round - ISLAND_TABLE.overlap : 0;
   let island: IslandInfo | undefined;
@@ -350,7 +366,7 @@ function planOne(d: Design, cat: KitchenCatalog, series: Series, v: Variant, use
     return [px + fit(Math.min(...xs), Math.max(...xs), room.w), pz + fit(Math.min(...zs), Math.max(...zs), room.d)];
   };
   if (d.island) {
-    const len = Math.max(1200, Math.min(3600, cfg.len));
+    const len = Math.max(hobOnIsland ? clear.hobIsland : 1200, Math.min(3600, Math.max(islFixLen, cfg.len)));
     if (cfg.pos) {
       // 방 밖으로 끌려 나가지 않게 — 상판 · 의자 자리까지 방 안으로 밀어 넣는다(예전엔 거실 · 벽 너머로 나가 아일랜드가 사라져 보였다)
       const [px, pz] = inRoom(cfg.pos.x, cfg.pos.z, cfg.pos.rot, len);
@@ -402,8 +418,12 @@ function planOne(d: Design, cat: KitchenCatalog, series: Series, v: Variant, use
       const main = runs.reduce((p, r) => ((r.b - r.a) > (p.b - p.a) ? r : p), runs[0]);
       const across = main.wall % 2 === 0 ? room.d : room.w;
       const opposite = runs.find((r) => r.wall === ((main.wall + 2) % 4));
-      const idep = twoSided ? BASE_D * 2 : BASE_D + 20 + cfg.over;
-      const need = COUNTER_D + aisle + idep + (opposite ? COUNTER_D + 1000 : 900);
+      // 아일랜드 상판 깊이 — 앞(장 쪽) 상판은 장보다 20 나온다(COUNTER_D). 예전엔 장 깊이로 잡아 통로가 20 · 양면은 40 좁게 나왔다
+      const idep = twoSided ? COUNTER_D * 2 : COUNTER_D + 20 + cfg.over;
+      /** 아일랜드 가운데(장 깊이 반) 자리 — 긴 줄 상판 앞에서 통로(aisle) 를 둔 뒤 아일랜드 앞 상판 끝까지(COUNTER_D − BASE_D/2) */
+      const islU = COUNTER_D + aisle + COUNTER_D - BASE_D / 2;
+      // 뒤쪽 — 마주 보는 줄이 있으면 그 장 앞까지 작업 통로, 없으면 벽까지 지나다니는 통로(예전엔 1,000 · 900 고정)
+      const need = COUNTER_D + aisle + idep + (opposite ? COUNTER_D + aisle : islandPass);
       const n: [number, number] = [-main.frame.n[0], -main.frame.n[1]];
       const rot = rotOfN(n);
       // 아일랜드 띠(긴 줄 앞 aisle 너머 · 아일랜드 깊이)를 가로지르는 옆 줄 = ㄷ자 · ㄱ자의 팔. 아일랜드는 팔 사이에만, 팔 상판 앞에서 끝마다 통로 islandPass.
@@ -411,7 +431,7 @@ function planOne(d: Design, cat: KitchenCatalog, series: Series, v: Variant, use
       //   팔 깊이는 상판(620) — 냉장고(약 720)가 그 띠에 서면 통로가 100 쯤 좁다
       const tOf = (p: [number, number]) => dot([p[0] - main.frame.o[0], p[1] - main.frame.o[1]], main.frame.dir);
       const uOf = (p: [number, number]) => dot([p[0] - main.frame.o[0], p[1] - main.frame.o[1]], main.frame.n);
-      const band = [COUNTER_D + aisle - (COUNTER_D - BASE_D), COUNTER_D + aisle + idep], mid = (main.a + main.b) / 2;
+      const band = [COUNTER_D + aisle, COUNTER_D + aisle + idep], mid = (main.a + main.b) / 2;
       let lo = main.a, hi = main.b, armLo: (typeof runs)[number] | null = null, armHi: (typeof runs)[number] | null = null;
       for (const r of runs) {
         if (r === main || Math.abs(dot(r.frame.dir, main.frame.n)) < 0.99) continue;
@@ -424,7 +444,7 @@ function planOne(d: Design, cat: KitchenCatalog, series: Series, v: Variant, use
       const padLo = armLo ? islandPass : 300, padHi = armHi ? islandPass : 300;
       const fitLen = Math.min(len, Math.floor((hi - lo - padLo - padHi - tableExt) / 100) * 100);
       if (across >= need && fitLen >= 1200) {
-        const c = P(main.frame, (lo + padLo + hi - padHi) / 2, COUNTER_D + aisle + BASE_D / 2);
+        const c = P(main.frame, (lo + padLo + hi - padHi) / 2, islU);
         // 식탁까지 한 덩어리로 가운데 — 아일랜드 가운데를 식탁 반대쪽으로 반만큼
         const fd = islandFrame(c[0], c[1], rot, fitLen).dir;
         c[0] -= fd[0] * tableExt / 2; c[1] -= fd[1] * tableExt / 2;
@@ -443,7 +463,7 @@ function planOne(d: Design, cat: KitchenCatalog, series: Series, v: Variant, use
           const Lp = Math.min(len, Math.floor((Math.abs(far - face) - tableExt) / 100) * 100);
           if (Lp < 1200) continue;
           const t0 = side === 0 ? face : face - Lp;
-          const c = P(main.frame, t0 + Lp / 2, COUNTER_D + aisle + BASE_D / 2);
+          const c = P(main.frame, t0 + Lp / 2, islU);
           const r = planOne({ ...d, islandCfg: { ...cfg, len: Lp, pos: { x: c[0], z: c[1], rot } }, _islShift: 2 } as Design, cat, series, v, useFix, false);
           if (r?.island?.attached == null) continue;
           const pass = side === 0 ? hi - (face + Lp + tableExt) : face - Lp - tableExt - lo;
@@ -643,7 +663,7 @@ function planOne(d: Design, cat: KitchenCatalog, series: Series, v: Variant, use
         else if (st.dish && !fx.dish) warnings.push('벽이 짧아 식기세척기장을 뺐습니다 — 넣으려면 방을 넓히거나 다른 공간 구조');
       }
       // 사용자가 옮긴 식기세척기장 — 어느 줄이든 그 벽 줄에
-      if (st.dish && fx.dish && fx.dish.wall === run.wall) fixed.push({ key: 'dish', w: 600, c: fx.dish.c, tag: 'dish' });
+      if (st.dish && fx.dish && !fx.dish.island && fx.dish.wall === run.wall) fixed.push({ key: 'dish', w: 600, c: fx.dish.c, tag: 'dish' });
       if (ri === v.hobRun) {
         // 쿡탑 조리장 폭 — 900 이 기본, 줄이 짧으면 800 · 700 · 600(1도어)까지 자동으로 줄인다 (사용자: 조리장도 자동으로 줄여)
         const free = segs.reduce((sum, [s0, s1]) => sum + s1 - s0, 0) - fixed.reduce((sum, f) => sum + f.w, 0);
@@ -824,7 +844,7 @@ function planOne(d: Design, cat: KitchenCatalog, series: Series, v: Variant, use
     if (st.uppers === 'full' && !chimney) for (const h of upItems.filter((x) => x.key === 'hood')) {
       const others = upItems.filter((x) => x !== h && x.level === 'wall');
       // 벽 · 코너 · 키큰장 묶음(joinU)에 닿거나 옆에 상부장이 있으면 EP 없음
-      if (!others.some((x) => near(x.t + x.w, h.t)) && !joinU.some((j) => near(j, h.t)) && h.t >= 20) upItems.push(ep('epW', run.frame, h.t - 20, run.wall));
+      if (!others.some((x) => near(x.t + x.w, h.t)) && !joinU.some((j) => near(j, h.t)) && h.t >= run.wa + 20) upItems.push(ep('epW', run.frame, h.t - 20, run.wall));
       if (!others.some((x) => near(x.t, h.t + h.w)) && !joinU.some((j) => near(j, h.t + h.w)) && h.t + h.w <= run.L - 20) upItems.push(ep('epW', run.frame, h.t + h.w, run.wall));
     }
     // 상부 코너장 안쪽 끝 — 이어지는 상부장 · 후드 · 키큰장 묶음이 없으면(창 · 문 옆) EP
@@ -845,7 +865,7 @@ function planOne(d: Design, cat: KitchenCatalog, series: Series, v: Variant, use
     for (const [s0, s1] of subtract(run.a, run.b, [...bl.base, ...groupSpans])) splashes.push({ frame: run.frame, t0: s0, t1: s1 });
   });
 
-  if (!sinkP) return null;
+  if (!sinkP && !sinkOnIsland) return null;
   // 3단 서랍장 — 어떤 구성이든 하나는 꼭(사용자 2026-11-05). 없으면 쿡탑 가까운 조리장(여닫이) 하나를 바꾼다 — 폭이 서랍장 규격이거나 비규격 범위 안
   if (!items.some((x) => x.key === 'drawer3') && mods('drawer3')) {
     const dm = mods('drawer3')!, dw = W('drawer3');
@@ -922,50 +942,86 @@ function planOne(d: Design, cat: KitchenCatalog, series: Series, v: Variant, use
     if (x.tag === 'dish') return [x.w, x.w];   // 식기세척기 기기 폭(600) 고정
     return Number.isFinite(lo) && Number.isFinite(hi) ? [lo, hi] : null;
   };
+  // 짝 장 — 장 폭 범위를 넘으면 1도어 ↔ 2도어(쿡탑장 1도어 600 + 220 → 2도어 820, 상부장도), 서랍 3단 → 2단(유로 3단은 600 까지)으로 바꿔 받는다.
+  //   예전엔 벽 끝이 없는 줄(ㄷ자 가운데 줄 · 냉장고 옆)에서 그 폭이 휠라로 장 사이에 남았다(사용자 2026-11-09 「휠라는 장사이에 배치하는게 아니야」)
+  const SIB: Record<string, string> = { cook1: 'cook2', cook2: 'cook1', wall1: 'wall2', wall2: 'wall1', drawer3: 'drawer2' };
+  const sibFor = (x: Item, w: number): string | null => {
+    const s = SIB[x.key], m = s ? mods(s) : undefined;
+    if (!s || !m || x.tag === 'dish') return null;
+    const o = W(s), lo = Math.max(m.nstd && m.wmin ? m.wmin : Math.min(...o), x.tag === 'hob' ? 600 : 300), hi = m.nstd && m.wmax ? m.wmax : Math.max(...o);
+    return w >= lo && w <= hi ? s : null;
+  };
+  const swapTake = (list: Item[], left: number): number => {
+    for (const x of byPriority(list, left > 0)) {
+      const s = left ? sibFor(x, x.w + left) : null;
+      if (!s) continue;
+      x.key = s; x.w += left; left = 0;
+    }
+    return left;
+  };
+  /** 한 줄(빈틈없이 이어진 장들)의 휠라 정리 — 휠라는 벽과 닿는 끝(atStart · atEnd)에만 하나씩, 폭 50 ~ 150.
+   *  모자라면 옆 장을 줄이고 남으면 장을 늘린다. 벽에 닿지 않는 끝(EP · 코너 · 창 · 문 · 아일랜드)에는 두지 않는다 — 그 폭은 장이 받고,
+   *  장 범위를 넘으면 1도어 ↔ 2도어, 그래도 남으면(300 이상) 장을 하나 더 넣는다. mk = 그 줄 휠라 */
+  const endFill = (g: Item[], atStart: boolean, atEnd: boolean, mk: (w: number, nb?: Item) => Item) => {
+    const fills = g.filter((x) => /fill/.test(x.key)), rest = g.filter((x) => !fills.includes(x));
+    if (!rest.length) return;
+    const s0 = g[0].t, s1 = g[g.length - 1].t + g[g.length - 1].w;
+    const k = (atStart ? 1 : 0) + (atEnd ? 1 : 0);
+    const F = fills.reduce((sum, x) => sum + x.w, 0);
+    // 장 폭 바꾸기 — 여닫이장 → 서랍장 → 식세 · 싱크 · 쿡탑장 순, 같은 등급이면 벽 끝에서 가까운 장부터
+    const resizable = (x: Item) => !!rangeOf(x);
+    const adjust = (order: Item[], delta: number) => {
+      for (const x of byPriority(order, delta > 0)) {   // 키울 때는 역방향(식세 · 싱크 · 쿡탑장 먼저)
+        if (!delta) break;
+        if (!resizable(x)) continue;
+        const r = rangeOf(x)!, nw = Math.max(r[0], Math.min(r[1], x.w + delta));
+        delta -= nw - x.w; x.w = nw;
+      }
+      return delta;
+    };
+    const w0 = rest.map((x) => ({ key: x.key, w: x.w }));
+    let per = k ? Math.max(50, Math.min(150, Math.round(F / k / 10) * 10)) : 0;
+    let left = adjust(k && atStart && !atEnd ? rest : rest.slice().reverse(), F - per * k);   // 휠라와의 차이 → 장 폭
+    // 장이 다 못 받은 만큼은 휠라가 (30 ~ 150), 그래도 남으면 1도어 ↔ 2도어
+    if (left && k) { const p2 = Math.max(FILL_MIN, Math.min(FILL_MAX, per + Math.round(left / k / 10) * 10)); left -= (p2 - per) * k; per = p2; }
+    if (left) left = swapTake(rest, left);
+    let extra: Item | null = null;
+    if (!k && left > 0 && left < 300) {
+      // 줄 양 끝이 벽이 아니라(EP · 키큰장 · 후드) 휠라를 벽 끝으로 못 보내는데 장도 다 못 받으면 — 장 사이 휠라 대신(사용자 2026-11-09 「휠라는 장사이에 배치하는게 아니야」 ·
+      // 2026-11-11 「휠라로 조절이 안될때 배치룰 순서대로 장의 사이즈를 조절」) 장들을 규칙 순서로 줄여 300 짜리 1도어장 하나를 더 넣는다. 못 줄이면 아래에서 그대로 둔다
+      const back = adjust(rest.slice().reverse(), -(300 - left));
+      if (!back) left = 300;
+      else rest.forEach((x, i) => { x.key = w0[i].key; x.w = w0[i].w; });
+    }
+    if (!k && left >= 300) {
+      const r0 = rest[rest.length - 1], key = r0.level === 'wall' ? (left > 600 ? 'wall2' : 'wall1') : left > 600 ? 'cook2' : 'cook1', m = mods(key);
+      const hi = m ? (m.nstd && m.wmax ? m.wmax : Math.max(...W(key))) : 0;
+      if (left <= hi) { extra = { key, level: r0.level, frame: r0.frame, t: 0, w: left, wall: r0.wall, ...(r0.tag === 'island' ? { tag: 'island' } : {}), ...(r0.ov?.NSTD_H ? { ov: { NSTD_H: r0.ov.NSTD_H } } : {}) }; left = 0; }
+    }
+    if (!k && left) { rest.forEach((x, i) => { x.key = w0[i].key; x.w = w0[i].w; }); return; }   // 벽 없는 줄인데 장이 못 받으면 그대로
+    for (const f of fills) items.splice(items.indexOf(f), 1);
+    if (extra) items.push(extra);
+    const seq = [...(atStart ? [mk(per, rest[0])] : []), ...rest, ...(extra ? [extra] : []), ...(atEnd ? [mk(per, rest[rest.length - 1])] : [])];
+    for (const x of seq) if (/fill/.test(x.key)) items.push(x);
+    // 남은 몇 mm 는 끝 휠라에 더해 줄 길이를 맞춘다
+    const sum = seq.reduce((a, x) => a + x.w, 0), gap = (s1 - s0) - sum;
+    if (gap) { const f = seq.find((x) => /fill/.test(x.key)); if (f) f.w += gap; else { const r0 = rest.find(resizable); if (r0) r0.w += gap; } }
+    let t = s0;
+    for (const x of seq) { x.t = t; t += x.w; }
+  };
+  /** 빈틈없이 이어진 장끼리 묶기 */
+  const runsOf = (pick: (x: Item) => boolean): Item[][] => {
+    const groups: Item[][] = [];
+    for (const x of items.filter(pick).sort((p, q) => p.t - q.t)) { const g = groups[groups.length - 1]; if (g && Math.abs(g[g.length - 1].t + g[g.length - 1].w - x.t) < 1) g.push(x); else groups.push([x]); }
+    return groups;
+  };
   for (const run of runs) {
     for (const lv of ['base', 'wall'] as const) {
       const pick = (x: Item) => x.frame === run.frame && x.level === lv && x.tag !== 'ep' && !/^corner|^wallCorner|^fridgeTop/.test(x.key);
-      const row = items.filter(pick).sort((p, q) => p.t - q.t);
-      const groups: Item[][] = [];
-      for (const x of row) { const g = groups[groups.length - 1]; if (g && Math.abs(g[g.length - 1].t + g[g.length - 1].w - x.t) < 1) g.push(x); else groups.push([x]); }
-      for (const g of groups) {
-        // 휠라 = 벽과 닿는 끝마다 하나(도어 열림 영역 · ㅡ자면 양쪽 벽). 폭 50 ~ 150, 모자라면 옆 장을 줄이고 남으면 장을 늘림.
-        // 벽에 닿지 않는 끝(EP · 코너 · 창 · 문)에는 휠라를 두지 않는다 — 그 폭은 장이 흡수
-        const fills = g.filter((x) => /fill/.test(x.key)), rest = g.filter((x) => !fills.includes(x));
-        if (!rest.length) continue;
-        const s0 = g[0].t, s1 = g[g.length - 1].t + g[g.length - 1].w;
-        const wallS = prevWall(run.wall) !== d.openWall || d.wing.b >= BASE_D, wallE = nextWall(run.wall) !== d.openWall || d.wing.a >= BASE_D;
-        const atStart = s0 <= 1 && wallS, atEnd = s1 >= run.L - 1 && wallE;
-        const k = (atStart ? 1 : 0) + (atEnd ? 1 : 0);
-        const F = fills.reduce((sum, x) => sum + x.w, 0);
-        // 장 폭 바꾸기 — 여닫이장 → 서랍장 → 식세 · 싱크 · 쿡탑장 순, 같은 등급이면 벽 끝에서 가까운 장부터
-        const resizable = (x: Item) => !!rangeOf(x);
-        const adjust = (order: Item[], delta: number) => {
-          for (const x of byPriority(order, delta > 0)) {   // 키울 때는 역방향(식세 · 싱크 · 쿡탑장 먼저)
-            if (!delta) break;
-            if (!resizable(x)) continue;
-            const r = rangeOf(x)!, nw = Math.max(r[0], Math.min(r[1], x.w + delta));
-            delta -= nw - x.w; x.w = nw;
-          }
-          return delta;
-        };
-        const w0 = rest.map((x) => x.w);
-        let per = k ? Math.max(50, Math.min(150, Math.round(F / k / 10) * 10)) : 0;
-        let left = adjust(k && atStart && !atEnd ? rest : rest.slice().reverse(), F - per * k);   // 휠라와의 차이 → 장 폭
-        // 장이 다 못 받은 만큼은 휠라가 (30 ~ 150)
-        if (left && k) { const p2 = Math.max(FILL_MIN, Math.min(FILL_MAX, per + Math.round(left / k / 10) * 10)); left -= (p2 - per) * k; per = p2; }
-        if (!k && left) { rest.forEach((x, i) => { x.w = w0[i]; }); continue; }   // 벽 없는 줄인데 장이 못 받으면 그대로
-        // 휠라 — 옆 장이 낮은 상부장(창 위)이면 그 높이를 따른다
-        const mk = (w: number, nb?: Item): Item => ({ key: lv === 'wall' ? 'wfill50' : 'bfill50', level: lv, frame: run.frame, t: 0, w, wall: run.wall, ...(nb?.ov?.NSTD_H ? { ov: { STD_YN: 'true', NSTD_H: nb.ov.NSTD_H } } : {}) });
-        for (const f of fills) items.splice(items.indexOf(f), 1);
-        const seq = [...(atStart ? [mk(per, rest[0])] : []), ...rest, ...(atEnd ? [mk(per, rest[rest.length - 1])] : [])];
-        for (const x of seq) if (/fill/.test(x.key)) items.push(x);
-        // 남은 몇 mm 는 끝 휠라에 더해 줄 길이를 맞춘다
-        const sum = seq.reduce((a, x) => a + x.w, 0), gap = (s1 - s0) - sum;
-        if (gap) { const f = seq.find((x) => /fill/.test(x.key)); if (f) f.w += gap; else { const r0 = rest.find(resizable); if (r0) r0.w += gap; } }
-        let t = s0;
-        for (const x of seq) { x.t = t; t += x.w; }
-      }
+      // 휠라 — 옆 장이 낮은 상부장(창 위)이면 그 높이를 따른다
+      const mk = (w: number, nb?: Item): Item => ({ key: lv === 'wall' ? 'wfill50' : 'bfill50', level: lv, frame: run.frame, t: 0, w, wall: run.wall, ...(nb?.ov?.NSTD_H ? { ov: { STD_YN: 'true', NSTD_H: nb.ov.NSTD_H } } : {}) });
+      const wallS = prevWall(run.wall) !== d.openWall || d.wing.b >= BASE_D, wallE = nextWall(run.wall) !== d.openWall || d.wing.a >= BASE_D;
+      for (const g of runsOf(pick)) endFill(g, g[0].t <= 1 && wallS, g[g.length - 1].t + g[g.length - 1].w >= run.L - 1 && wallE, mk);
     }
     const hob = items.find((x) => x.tag === 'hob' && x.frame === run.frame), hood = items.find((x) => x.key === 'hood' && x.frame === run.frame);
     if (hob && hood) {
@@ -973,12 +1029,40 @@ function planOne(d: Design, cat: KitchenCatalog, series: Series, v: Variant, use
       if (dd) {
         // 같은 높이 상부장끼리만 — 창 위 낮은 상부장(NSTD_H)까지 묶으면 그 사이에 키 큰 휠라가 끼었다
         const ug = rowGroup(items, hood, (x) => x.level === 'wall' && x.tag !== 'ep' && !x.key.startsWith('wallCorner') && x.key !== 'fridgeTop' && !x.ov?.NSTD_H);
-        const pl = nudge(ug, hood, dd, rangeOf, (w) => ({ key: 'wfill50', level: 'wall', frame: run.frame, t: 0, w, wall: run.wall }));
+        // 휠라는 벽에 닿는 끝에만 — 냉장고 윗장 · 코너 · EP 쪽 끝은 장이 받는다(예전엔 냉장고 윗장 옆에 휠라가 생겼다)
+        const wallS = prevWall(run.wall) !== d.openWall || d.wing.b >= BASE_D, wallE = nextWall(run.wall) !== d.openWall || d.wing.a >= BASE_D;
+        const fo: [boolean, boolean] = [ug[0].t <= 1 && wallS, ug[ug.length - 1].t + ug[ug.length - 1].w >= run.L - 1 && wallE];
+        const pl = nudge(ug, hood, dd, rangeOf, (w) => ({ key: 'wfill50', level: 'wall', frame: run.frame, t: 0, w, wall: run.wall }), fo, sibFor);
         if (pl) {
           for (const x of pl.remove) items.splice(items.indexOf(x), 1);
           items.push(...pl.add);
           for (const [x, w] of pl.w) x.w = w;
           for (const [x, tt] of pl.t) x.t = tt;
+        } else {
+          // 줄 길이 그대로는 안 될 때 — 후드가 가는 쪽 반대 끝이 EP(창 · 문 옆 드러난 끝)면 EP 까지 함께 옮겨 그 빈 쪽을 넓히고,
+          //   후드 앞쪽 장들이 그만큼 줄어든다(ㄷ자 좁은 방 — 쿡탑장이 2도어 820 으로 넓어지면 후드가 110 비켜 있었다)
+          //   EP 없이 빈 곳(창 위 · 오픈 선반 자리)에 닿은 끝도 같다. 벽에 닿은 끝(줄 처음 · 끝)은 벽에서 떨어지므로 하지 않는다
+          const i = ug.indexOf(hood), a = ug[0], z = ug[ug.length - 1];
+          const at = dd > 0 ? a.t : z.t + z.w, onWall = dd > 0 ? at <= 1 : at >= run.L - 1;
+          const touch = items.filter((x) => x.frame === run.frame && (x.level === 'wall' || x.level === 'tall') && !ug.includes(x) && (dd > 0 ? Math.abs(x.t + x.w - at) < 1 : Math.abs(x.t - at) < 1));
+          const ep = touch.find((x) => x.tag === 'ep'), free = !onWall && (touch.length === 0 || (touch.length === 1 && !!ep));
+          const give = dd > 0 ? ug.slice(i + 1) : ug.slice(0, i), keep = dd > 0 ? ug.slice(0, i + 1) : ug.slice(i);
+          const w0 = give.map((x) => ({ key: x.key, w: x.w }));
+          let rem = -Math.abs(dd);
+          for (const x of byPriority(dd > 0 ? give : give.slice().reverse())) {
+            const r = rem ? rangeOf(x) : null;
+            if (!r) continue;
+            const nw = Math.max(r[0], Math.min(r[1], x.w + rem));
+            rem -= nw - x.w; x.w = nw;
+          }
+          if (rem) rem = swapTake(give, rem);
+          if (!free || !give.length || rem) give.forEach((x, k) => { x.key = w0[k].key; x.w = w0[k].w; });
+          else {
+            if (ep) ep.t += dd;
+            for (const x of keep) x.t += dd;
+            let t = dd > 0 ? hood.t + hood.w : a.t;
+            for (const x of give) { x.t = t; t += x.w; }
+          }
         }
       }
     }
@@ -1009,19 +1093,59 @@ function planOne(d: Design, cat: KitchenCatalog, series: Series, v: Variant, use
         storageMM += w > 75 ? w : 0; cur += w; i++;
       }
     };
-    // 쿡탑을 아일랜드로 옮겼으면 — 그 자리에 조리장(900), 앞뒤 틈은 휠라 하나(150) 이하 · 장 하나(300) 이상이 되게 민다
-    const ihob = useFix && d.fix?.hob?.island ? d.fix.hob : null, hw = 900;
-    if (ihob && c1 - c0 >= hw) {
+    // 아일랜드로 옮긴 싱크 · 식기세척기 · 쿡탑 — 가운데 자리(c) 순서로 놓고, 앞뒤 틈은 휠라 하나(150) 이하 · 장 하나(300) 이상이 되게 민다.
+    //   식기세척기는 따로 옮기지 않았으면 싱크 옆 넓은 쪽(쿡탑이 있으면 그 반대쪽). 다 안 들어가면 식기세척기부터 뺀다
+    {
+      // 덩어리 — 따로 옮기지 않은 식기세척기는 싱크와 한 덩어리(늘 맞붙게)
+      type Part = { key: string; w: number; tag: 'sink' | 'dish' | 'hob' };
+      type Block = { parts: Part[]; c: number };
+      const fxs = useFix ? d.fix ?? {} : {};
+      const wOf = (b: Block) => b.parts.reduce((sum, x) => sum + x.w, 0);
+      const sinkPart: Part = { key: 'sink', w: sinkW, tag: 'sink' }, dishPart: Part = { key: 'dish', w: 600, tag: 'dish' };
+      const blocks: Block[] = [];
+      const dishOk = dishOnIsland && !!mods('dish');
+      if (sinkOnIsland) {
+        const sc = fxs.sink!.c;
+        if (dishOk && !fxs.dish?.island) {
+          // 싱크 옆 넓은 쪽 — 쿡탑도 아일랜드면 쿡탑 반대쪽(열 나는 기기에서 떨어지게)
+          const right = hobOnIsland ? fxs.hob!.c < sc : c1 - (sc + sinkW / 2) >= sc - sinkW / 2 - c0;
+          blocks.push({ parts: right ? [sinkPart, dishPart] : [dishPart, sinkPart], c: sc + (right ? 300 : -300) });
+        } else blocks.push({ parts: [sinkPart], c: sc });
+      }
+      if (hobOnIsland) blocks.push({ parts: [{ key: 'cook2', w: 900, tag: 'hob' }], c: fxs.hob!.c });
+      if (dishOk && fxs.dish?.island) blocks.push({ parts: [dishPart], c: fxs.dish.c });
+      const has = (tag: Part['tag']) => blocks.some((b) => b.parts.some((x) => x.tag === tag));
+      const fits = () => blocks.reduce((sum, b) => sum + wOf(b), 0) + (has('sink') && has('hob') ? 300 : 0) <= c1 - c0;
+      if (!fits() && has('dish')) {
+        for (const b of blocks) { const i = b.parts.findIndex((x) => x.tag === 'dish'); if (i >= 0) { if (b.parts.length > 1) b.c += i === 0 ? 300 : -300; b.parts.splice(i, 1); } }
+        for (let i = blocks.length - 1; i >= 0; i--) if (!blocks[i].parts.length) blocks.splice(i, 1);
+        warnings.push('아일랜드가 짧아 식기세척기장을 뺐습니다 — 아일랜드 길이를 늘리면 싱크 옆에 들어갑니다');
+      }
+      // 그래도 넘치면 쿡탑부터 뺀다(이 안은 버려지고 autoPlan 이 쿡탑을 벽 줄로 다시 잡는다)
+      for (const tag of ['hob', 'sink'] as const) if (!fits() && has(tag)) blocks.splice(blocks.findIndex((b) => b.parts.some((x) => x.tag === tag)), 1);
+      blocks.sort((p1, p2) => p1.c - p2.c);
       const ok = (g: number) => g <= 150 || g >= 300;
-      let t0 = Math.max(c0, Math.min(c1 - hw, Math.round((ihob.c - hw / 2) / 10) * 10));
-      if (!ok(t0 - c0)) t0 = t0 - c0 < 225 ? c0 : c0 + 300;
-      if (!ok(c1 - t0 - hw)) t0 = c1 - t0 - hw < 225 ? c1 - hw : c1 - hw - 300;
-      t0 = Math.max(c0, Math.min(c1 - hw, t0));
-      front(t0);
-      items.push({ key: 'cook2', level: 'base', frame: f, t: cur, w: hw, tag: 'hob' });
-      hobP = P(f, cur + hw / 2, BASE_D / 2);
-      cur += hw;
-      reasons.push('쿡탑을 아일랜드에 — 후드는 천장형으로 따로');
+      let x = c0;
+      const placed: { b: Block; t: number }[] = [];
+      blocks.forEach((b, i) => {
+        const bw = wOf(b), rest = blocks.slice(i + 1).reduce((sum, q) => sum + wOf(q), 0), hi = c1 - rest - bw;
+        let t = Math.max(x, Math.min(hi, Math.round((b.c - bw / 2) / 10) * 10));
+        if (!ok(t - x)) t = t - x < 225 ? x : Math.min(hi, x + 300);
+        if (i === blocks.length - 1 && !ok(c1 - t - bw)) t = c1 - t - bw < 225 ? c1 - bw : Math.max(x, c1 - bw - 300);
+        t = Math.max(x, Math.min(hi, t));
+        placed.push({ b, t }); x = t + bw;
+      });
+      for (const { b, t } of placed) {
+        front(t);
+        for (const it of b.parts) {
+          items.push({ key: it.key, level: 'base', frame: f, t: cur, w: it.w, tag: it.tag });
+          if (it.tag === 'sink') sinkP = P(f, cur + it.w / 2, BASE_D / 2);
+          if (it.tag === 'hob') hobP = P(f, cur + it.w / 2, BASE_D / 2);
+          cur += it.w;
+        }
+      }
+      if (has('hob')) reasons.push('쿡탑을 아일랜드에 — 후드는 천장형으로 따로');
+      if (has('sink')) reasons.push(`싱크를 아일랜드에${has('dish') ? ' · 식기세척기 옆에' : ''} — 급수 · 배수는 바닥 속으로(설비 보기)`);
     }
     front(c1);
     const bf: Frame = { o: P(f, len, 0), dir: [-f.dir[0], -f.dir[1]], n: [-f.n[0], -f.n[1]] };
@@ -1049,6 +1173,10 @@ function planOne(d: Design, cat: KitchenCatalog, series: Series, v: Variant, use
         bc += w;
       }
     }
+    // 아일랜드엔 벽 끝이 없다 — 휠라 없이 장이 그 폭을 받는다(쿡탑 앞뒤 틈 · 끝맞춤에 남던 휠라)
+    const imk = (w: number): Item => ({ key: 'bfill50', level: 'base', frame: f, t: 0, w, tag: 'island' });
+    for (const fr of twoSided ? [f, bf] : [f]) for (const g of runsOf((x) => x.frame === fr && x.level === 'base' && x.tag !== 'ep' && x.tag !== 'fix')) endFill(g, false, false, imk);
+    for (const x of items) if (x.frame === f && (x.tag === 'sink' || x.tag === 'hob')) { const q = P(f, x.t + x.w / 2, BASE_D / 2); if (x.tag === 'sink') sinkP = q; else hobP = q; }
     const z0 = twoSided ? -COUNTER_D : -(20 + cfg.over);
     counters.push({ frame: f, t0: attEnd === 0 ? COUNTER_D - BASE_D : 0, t1: attEnd === 1 ? len - (COUNTER_D - BASE_D) : len, z0, z1: COUNTER_D, island: true });
     counterMM += len;
@@ -1060,6 +1188,7 @@ function planOne(d: Design, cat: KitchenCatalog, series: Series, v: Variant, use
     const te0 = attEnd === 1 ? -ext : 0, te1 = attEnd === 1 ? len : len + ext;
     const corners = [[te0, z0], [te1, z0], [te1, COUNTER_D], [te0, COUNTER_D]].map(([t, z]) => P(f, t, z));
     if (corners.some(([x, z]) => x < -1 || z < -1 || x > room.w + 1 || z > room.d + 1)) warnings.push('아일랜드가 방 밖으로 나갑니다');
+    if (hobOnIsland && len < clear.hobIsland) warnings.push(`쿡탑을 넣은 아일랜드가 ${len}mm — 기준 ${clear.hobIsland}mm보다 짧습니다(방이 좁아 줄였어요)`);
   }
 
   // 30 미만 휠라 — 끝맞춤 몇 mm · 고정 장 사이 좁은 틈이 남긴 것. 옆 장을 줄여 30 으로, 안 되면 빼고 옆 장이 받는다(원본 휠라 모델이 30 미만이면 깨진다)
@@ -1068,19 +1197,33 @@ function planOne(d: Design, cat: KitchenCatalog, series: Series, v: Variant, use
   // 자리 계산은 틀 시작 기준이므로 L 은 장 자리(t)를 몸통 시작으로 100 옮긴다 — 걸레받이 · 찬넬 · 고르기 상자가 몸통에 맞게
   for (const it of items) if (it.key === 'cornerL') it.t += 100;
   applyNonStandard(items, mods);
+  // 쿡탑 양옆 · 싱크볼 좌우 상판 여유(기준 clearOf) — 모자라면 알림, 점수는 한 쪽마다 5% 깎는다(15% 까지)
+  const short = sideGaps(d, { items, counters }).filter((g) => !g.ok);
+  for (const what of ['hob', 'sink'] as const) {
+    const gs = short.filter((g) => g.what === what);
+    if (gs.length) warnings.push(`${what === 'hob' ? '쿡탑' : '싱크볼'} 옆 상판 여유 ${gs.map((g) => `${g.free}mm`).join(' · ')} — 기준 ${gs[0].need}mm`);
+  }
+  const clearPen = Math.max(0.85, 1 - 0.05 * short.length);
   // 점수
   const dist = (p?: [number, number], q?: [number, number]) => (p && q ? Math.hypot(p[0] - q[0], p[1] - q[1]) : NaN);
+  if (!sinkP) return null;
   const legs = [dist(sinkP, hobP), dist(hobP, fridgeP), dist(fridgeP, sinkP)];
   const tri = legs.every((x) => !Number.isNaN(x)) ? legs.reduce((s, x) => s + x, 0) : NaN;
   const triScore = Number.isNaN(tri) ? 0.6 : tri < 3600 ? 0.5 + 0.5 * tri / 3600 : tri <= 6600 ? 1 : Math.max(0, 1 - (tri - 6600) / 4000);
   const prep = sinkP && hobP ? Math.abs(dist(sinkP, hobP)) - 950 : 0;
   const prepScore = prep >= 600 ? 1 : Math.max(0, prep / 600);
-  const door = d.openings.find((o) => o.kind === 'door');
-  const doorP = door ? wallPoint(room, door.wall, door.t + door.w / 2, 0)
+  const door = d.openings.find((o) => o.kind === 'door' && isKitchenWall(o.wall));
+  const doorP = door && isKitchenWall(door.wall) ? wallPoint(room, door.wall, door.t + door.w / 2, 0)
     : d.openWall != null ? wallPoint(room, d.openWall, wallLength(room, d.openWall) / 2, 0) : undefined;
   const flow = fridgeP && doorP ? Math.max(0, 1 - dist(fridgeP, doorP) / (room.w + room.d)) : 0.5;
   const storeNeed = { basic: 6000, cafe: 4000, storage: 11000 }[d.style];
   const storeScore = Math.min(1, storageMM / storeNeed);
+  // 쿡탑 최종 자리로 다시 — 처음 자리로만 봐서, 구간 안으로 당겨지며 창 밑으로 들어간 쿡탑을 놓쳤다(2026-11-11 기본 냉장고 4도어에서 1위 안이
+  // 쿡탑을 창 밑에 두고 후드도 없었다). 쿡탑 위에 후드를 달 수 없는 안(후드일체형 쿡탑 빼고)은 크게 감점 · 경고
+  const hobIt = items.find((x) => x.tag === 'hob' && x.wall != null);
+  if (hobIt && d.openings.some((o) => o.kind === 'window' && o.wall === hobIt.wall && hobIt.t < o.t + o.w + 300 && hobIt.t + hobIt.w > o.t - 300)) hobUnderWindow = true;
+  const noHood = !!hobIt && !/후드일체형/.test(applianceOf('hob', d.appliance?.hob)?.name ?? '') && !items.some((x) => x.key === 'hood' && x.frame === hobIt.frame);
+  if (noHood) warnings.push('쿡탑 위에 후드를 달 자리가 없습니다(창 · 문 · 상부장 자리) — 다른 배치안을 고르세요');
   const light = (sinkUnderWindow ? 1 : 0.4) * (hobUnderWindow ? 0.5 : 1);
   // 냉장고장을 일부러 뺐으면(noFridge) 감점 · 경고 없음
   const islandBonus = (d.island ? (islandNote ? 1 : 0.7) : 1) * (fridgeP || d.noFridge ? 1 : 0.95);
@@ -1097,7 +1240,7 @@ function planOne(d: Design, cat: KitchenCatalog, series: Series, v: Variant, use
   if (wants.includes('flow')) { wts[0] *= 1.6; wts[4] *= 1.6; }
   if (wants.includes('cook')) wts[1] *= 1.8;
   const wsum = wts.reduce((a2, b2) => a2 + b2, 0);
-  const score = Math.round(100 * islandBonus * (wts[0] * triScore + wts[1] * prepScore + wts[2] * storeScore + wts[3] * light + wts[4] * flow + wts[5] * openness) / wsum);
+  const score = Math.round(100 * islandBonus * clearPen * (noHood ? 0.8 : 1) * (wts[0] * triScore + wts[1] * prepScore + wts[2] * storeScore + wts[3] * light + wts[4] * flow + wts[5] * openness) / wsum);
   if (wants.includes('open')) (metrics as Record<string, number>)['개방감'] = Math.round(openness * 100);
   if (wants.length) reasons.push(`바라는 것을 점수에 반영 — ${wants.map((w) => WANT_LABEL[w]).join(' · ')}`);
 
@@ -1107,7 +1250,7 @@ function planOne(d: Design, cat: KitchenCatalog, series: Series, v: Variant, use
   if (prep > 0) reasons.push(`싱크와 쿡탑 사이 조리대 ${Math.round(prep / 10) * 10}mm${prep >= 600 ? '' : ' (600 이상 권장)'}`);
   reasons.push(`하부 조리대 ${(counterMM / 1000).toFixed(1)}m · 수납 ${STYLE[d.style].label} 기준 ${metrics.수납}%`);
   if (islandNote) reasons.push(islandNote);
-  for (const o of d.openings) if (o.kind !== 'window' && o.kind !== 'door') reasons.push(`${OPENING_INFO[o.kind].label} 입구를 비우고 배치`);
+  for (const o of d.openings) if (o.kind !== 'window' && o.kind !== 'door' && isKitchenWall(o.wall)) reasons.push(`${OPENING_INFO[o.kind].label} 입구를 비우고 배치`);
 
   const title = `${{ I: 'ㅡ자', L: 'ㄱ자', Lr: 'ㄱ자', U: 'ㄷ자', II: '11자', walls: '벽 선택' }[d.layout]} · ${v.walls.map((w) => wallName(d.openWall, w, true)).join('+')}${v.sinkAtWindow && sinkUnderWindow ? ' · 창가 싱크' : ''}`;
   return {
@@ -1163,9 +1306,21 @@ function orderWalls(ws: WallId[]): WallId[] {
 }
 
 export function autoPlan(d: Design, cat: KitchenCatalog, series: Series, max = 4): Candidate[] {
+  // 아일랜드를 끄면 아일랜드에 둔 싱크 · 식세 · 쿡탑 자리는 자동(벽 줄)으로
+  if (!d.island && d.fix && Object.values(d.fix).some((v) => v?.island)) d = { ...d, fix: Object.fromEntries(Object.entries(d.fix).filter(([, v]) => !v?.island)) };
   let out = collect(d, cat, series, true);
-  // 옮긴 자리가 이 공간 구조와 맞지 않으면(그 벽에 장이 없음) 무시하고 다시
-  if (!out.length && d.fix && Object.keys(d.fix).length) out = collect(d, cat, series, false);
+  // 싱크 · 쿡탑을 둘 다 아일랜드로 옮겼는데 아일랜드가 짧으면 — 싱크만 아일랜드에, 쿡탑은 벽 줄로
+  if (!out.length && d.fix?.sink?.island && d.fix.hob?.island) {
+    const d2 = { ...d, fix: { ...d.fix } };
+    delete d2.fix.hob;
+    out = collect(d2, cat, series, true);
+    for (const c of out) c.warnings.unshift('아일랜드가 짧아 쿡탑은 벽 줄에 두었습니다 — 싱크와 쿡탑을 같이 두려면 아일랜드를 늘려 보세요');
+  }
+  // 옮긴 자리가 이 공간 구조와 맞지 않으면(그 벽에 장이 없음 · 아일랜드가 짧음) 무시하고 다시
+  if (!out.length && d.fix && Object.keys(d.fix).length) {
+    out = collect(d, cat, series, false);
+    if (d.fix.sink?.island) for (const c of out) c.warnings.unshift('아일랜드에 싱크를 넣지 못해 벽 줄에 두었습니다 — 아일랜드 길이를 늘려 보세요');
+  }
   // 코너 팬트리장을 켰는데 놓을 코너가 없으면(一자 · 코너 앞 문 · 창) 빼고 다시 — 배치 자체가 사라지지 않게
   if (!out.length && d.cornerPantry) {
     out = collect(d, cat, series, true, false);
@@ -1185,9 +1340,10 @@ function collect(d: Design, cat: KitchenCatalog, series: Series, useFix: boolean
   const pantryOpts = hasPantry && pantryOn ? [true] : [false];
   for (const walls of wallSets(d)) {
     const n = walls.length;
-    for (let sinkRun = 0; sinkRun < n; sinkRun++) {
-      if (fx.sink && walls[sinkRun] !== fx.sink.wall) continue;
-      const hobRuns = fx.hob?.island && d.island ? [-1] : fx.hob ? walls.map((w, i) => (w === fx.hob!.wall ? i : -1)).filter((i) => i >= 0) : n === 1 ? [0] : [...new Set([sinkRun, (sinkRun + 1) % n])];
+    const sinkI = !!fx.sink?.island;
+    for (const sinkRun of sinkI ? [-1] : [...Array(n).keys()]) {
+      if (!sinkI && fx.sink && walls[sinkRun] !== fx.sink.wall) continue;
+      const hobRuns = fx.hob?.island ? [-1] : fx.hob ? walls.map((w, i) => (w === fx.hob!.wall ? i : -1)).filter((i) => i >= 0) : n === 1 ? [0] : sinkI ? [...Array(n).keys()] : [...new Set([sinkRun, (sinkRun + 1) % n])];
       for (const hobRun of hobRuns) {
         // 냉장고장 자리를 골랐으면 그 벽 · 그 끝만 (그 벽이 이 조합에 없으면 자동)
         const fa = useFix && d.fridgeAt && walls.includes(d.fridgeAt.wall) ? d.fridgeAt : null;

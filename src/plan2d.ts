@@ -4,8 +4,9 @@ import { slotMovable } from './reorder';
 import { BASE_D, WALL_D } from './autoplan';
 import { chairSpots, diningOf, diningPose } from './dining3d';
 import { ISLAND_TABLE } from './plan';
-import { livingOf, OPENING_INFO, clampOpening, nearestWall, wallFrame, wallName, wallLength, type Design, type FixKey, type Opening, type WallId } from './plan';
+import { anyWallName, clearOf, isKitchenWall, livingOf, livingWindow, OPENING_INFO, clampOpening, nearestAnyWall, wallFrame, wallLine, wallName, wallLength, wallRun, type AnyWall, type Design, type FixKey, type Opening, type WallId } from './plan';
 import { flowOf, type FlowInfo } from './flow';
+import { HOT_COLOR, SYS_COLOR, SYS_LABEL, SYS_LIST, mepOf, type MepInfo, type Sys, type V3 } from './mep';
 
 const NS = 'http://www.w3.org/2000/svg';
 const el = <K extends keyof SVGElementTagNameMap>(tag: K, attrs: Record<string, string | number>, parent?: Element) => {
@@ -23,6 +24,16 @@ export class PlanView {
   /** 동선 정보 겹쳐 그리기 — 작업 삼각형 변 길이 · 통로 폭 · 이동 경로(flow.ts). 요약은 flowBox 에 */
   showFlow = true;
   flowBox?: HTMLElement;
+  /** 설비 층(mep.ts) — 머리 「설비」 단추로 켜고, 아래 요약 줄 칩으로 종류별 켜고 끈다. 인입점 · 콘센트는 끌어 옮기고 누르면 메뉴 */
+  showMep = false;
+  mepSys = new Set<Sys>(SYS_LIST);
+  mepBox?: HTMLElement;
+  /** 고른 인입점(키) · 콘센트(out:id) */
+  selectedMep: string | null = null;
+  onMepMove?: (ref: string, x: number, z: number, done: boolean) => void;
+  onMepPick?: (ref: string | null) => void;
+  onMepSys?: (sys: Set<Sys>) => void;
+  private mepDrag?: { ref: string; moved: boolean; x: number; z: number };
   selected: string | null = null;
   onChange?: (id: string, o: Partial<Opening>, done: boolean) => void;
   onSelect?: (id: string | null) => void;
@@ -57,7 +68,10 @@ export class PlanView {
     const { x, y, w, h } = this.base, { k, ox, oy } = this.view;
     const w2 = w / k, h2 = h / k, cx = x + w / 2 + ox, cy = y + h / 2 + oy;
     this.svg.setAttribute('viewBox', `${cx - w2 / 2} ${cy - h2 / 2} ${w2} ${h2}`);
+    this.pxUnit();
   }
+  /** 화면 1px = 도면 몇 mm — 벽 이름처럼 작은 평면도에서도 읽혀야 하는 글씨가 화면 크기를 지키게(CSS --u) */
+  private pxUnit() { this.svg.style.setProperty('--u', String(this.unitPerPx())); }
   /** 화면 1px 이 도면 몇 mm 인지 */
   private unitPerPx() { const m = this.svg.getScreenCTM(); return m ? 1 / m.a : 1; }
   /** 처음 보기(방 전체 맞춤) */
@@ -88,6 +102,7 @@ export class PlanView {
   constructor(host: HTMLElement) {
     this.svg = el('svg', { class: 'plan-svg' }) as SVGSVGElement;
     host.append(this.svg);
+    new ResizeObserver(() => this.pxUnit()).observe(this.svg);   // 2D · 3D 바꾸기로 평면도 크기가 바뀔 때
     this.svg.addEventListener('pointermove', (e) => this.move(e));
     this.svg.addEventListener('pointerup', (e) => this.up(e));
     // 빈 곳(바닥 · 바깥)을 누르면 — 끌면 화면 이동, 그냥 떼면 선택 해제. 오른쪽 · 가운데 버튼은 어디서든 화면 이동
@@ -134,7 +149,13 @@ export class PlanView {
     const swap = Math.abs(this.angle) === 90;
     // 보기 범위 — 방 · 거실 꼭짓점을 돌린 뒤의 경계
     const rad = this.angle * Math.PI / 180, cx = r.w / 2, cz = r.d / 2;
-    const all = [[-m, -m], [r.w + m, -m], [r.w + m, r.d + m], [-m, r.d + m], ...lvPts.map(([x, z]) => [x, z])];
+    const sidePts: number[][] = [];
+    for (const o of d.openings) {
+      const f = o.depth ? wallLine(d, o.wall) : null;
+      if (!f) continue;
+      for (const [t, u] of [[o.t - 300, 0], [o.t + o.w + 300, 0], [o.t + o.w + 300, -o.depth! - 150], [o.t - 300, -o.depth! - 150]]) sidePts.push([f.o[0] + f.dir[0] * t + f.n[0] * u, f.o[1] + f.dir[1] * t + f.n[1] * u]);
+    }
+    const all = [[-m, -m], [r.w + m, -m], [r.w + m, r.d + m], [-m, r.d + m], ...lvPts.map(([x, z]) => [x, z]), ...sidePts];
     const rp = all.map(([x, z]) => [cx + (x - cx) * Math.cos(rad) - (z - cz) * Math.sin(rad), cz + (x - cx) * Math.sin(rad) + (z - cz) * Math.cos(rad)]);
     const minX = Math.min(...rp.map((p) => p[0])) - 150, maxX = Math.max(...rp.map((p) => p[0])) + 150;
     const minY = Math.min(...rp.map((p) => p[1])) - 150, maxY = Math.max(...rp.map((p) => p[1])) + 150;
@@ -146,7 +167,8 @@ export class PlanView {
     // 벽 너머 공간
     for (const o of d.openings) {
       if (!o.depth) continue;
-      const f = wallFrame(r, o.wall);
+      const f = wallLine(d, o.wall);
+      if (!f) continue;
       const a = [f.o[0] + f.dir[0] * (o.t - 300), f.o[1] + f.dir[1] * (o.t - 300)];
       const pts = [[0, 0], [o.w + 600, 0], [o.w + 600, -o.depth - 150], [0, -o.depth - 150]].map(([t, u]) => [a[0] + f.dir[0] * t + f.n[0] * (u - 0), a[1] + f.dir[1] * t + f.n[1] * (u - 0)]);
       el('polygon', { points: pts.map((p) => p.join(',')).join(' '), class: 'p-side', style: `--c:${OPENING_INFO[o.kind].color}` }, svg);
@@ -159,9 +181,12 @@ export class PlanView {
       const Q = (t: number, u: number) => [f.o[0] + f.dir[0] * t + f.n[0] * u, f.o[1] + f.dir[1] * t + f.n[1] * u];
       const T = 150, lv = livingOf(d), D = lv.depth, sa = lv.a, sb = lv.b, LW = L + sa + sb;
       el('polygon', { points: [Q(-sa, -T), Q(L + sb, -T), Q(L + sb, -T - D), Q(-sa, -T - D)].map((p) => p.join(',')).join(' '), class: 'p-living' }, svg);
-      const ww = Math.min(LW - 1200, 4200), w0 = (LW - ww) / 2 - sa;
-      const wa = Q(w0, -T * 1.5 - D), wb = Q(w0 + ww, -T * 1.5 - D);
-      el('line', { x1: wa[0], y1: wa[1], x2: wb[0], y2: wb[1], class: 'p-opline p-window', style: '--c:#4f8fd6' }, svg);
+      // 기본 거실 창 — 그 자리에 공간 요소를 놓았으면 없다(livingWindow, 3D 와 같음)
+      const lw = livingWindow(d);
+      if (lw) {
+        const wa = Q(lw.t - sa, -T * 1.5 - D), wb = Q(lw.t + lw.w - sa, -T * 1.5 - D);
+        el('line', { x1: wa[0], y1: wa[1], x2: wb[0], y2: wb[1], class: 'p-opline p-window', style: '--c:#4f8fd6' }, svg);
+      }
       const lp = Q((L + sb - sa) / 2, -T - D / 2);
       const lt = el('text', { x: lp[0], y: lp[1], class: 'p-livingname' }, svg); lt.textContent = '거실';
       // 거실 벽 고르기 띠 — 맞은편(10) · 양옆(11 · 12) · 부엌 쪽 어깨(15 · 16). 부엌과 이어진 통로는 벽이 아니라 고르지 않는다
@@ -272,15 +297,33 @@ export class PlanView {
       const hl = el('line', { x1: a[0], y1: a[1], x2: b[0], y2: b[1], class: `p-wallhit${this.pickedWall === w ? ' on' : ''}` }, svg);
       hl.addEventListener('pointerdown', (e) => { e.stopPropagation(); this.pickedWall = w; this.onPickWall?.(w); this.draw(); });
     }
-    // 치수
-    const dim = (x: number, y: number, txt: string, rot = 0) => { const t = el('text', { x, y, class: 'p-dim', transform: rot ? `rotate(${rot} ${x} ${y})` : '' }, svg); t.textContent = txt; };
-    dim(r.w / 2, -m + 170, `${r.w}`); dim(-m + 170, r.d / 2, `${r.d}`, -90);
-    for (const w of ([0, 1, 2, 3] as WallId[]).filter((x) => x !== d.openWall)) {
-      const f = wallFrame(r, w), L = wallLength(r, w);
-      const p = [f.o[0] + f.dir[0] * L / 2 - f.n[0] * 230, f.o[1] + f.dir[1] * L / 2 - f.n[1] * 230];
-      const t = el('text', { x: p[0], y: p[1], class: 'p-wallname', transform: w % 2 ? `rotate(${w === 1 ? 90 : -90} ${p[0]} ${p[1]})` : '' }, svg); t.textContent = wallName(d.openWall, w);
+    // 벽 이름 · 길이 — 벽 바깥에 벽을 따라 진한 글씨(흰 테두리). 예전엔 흰 글씨가 벽 밖 밝은 바탕에 놓이고
+    //   방 가로 · 세로 치수와 같은 자리라 겹쳐 안 보였다(사용자 2026-11-09 「벽 이름 표시가 잘 안보여 · 벽마다 길이를 보여줘」)
+    // 거실 벽(맞은편 · 양옆)도 — 거실 어깨 폭이 0 이라 부엌 옆 벽과 한 줄로 이어지면 이름표 하나에 문턱 두께(150)까지 합친 길이
+    //   (사용자 2026-11-10 「부엌 벽과 거실벽이 하나로 합쳐졌기에 두께까지 합쳐서 벽 길이를 측정해야해」). 어깨가 있으면 부엌 옆 벽은 트인 쪽 끝 거실 어깨 벽 두께까지
+    //   (같은 날 「부엌 벽 길이를 거실 왼쪽, 오른쪽 벽 두께도 포함해줘」)
+    for (const w of [0, 1, 2, 3, 10, 11, 12] as AnyWall[]) {
+      const f = wallLine(d, w), run = wallRun(d, w);
+      if (!f || run.parts[0] !== w) continue;
+      const living = run.parts.some((x) => !isKitchenWall(x)), gap = living ? 185 : 110, mid = run.L / 2 - run.off;
+      const p = [f.o[0] + f.dir[0] * mid - f.n[0] * gap, f.o[1] + f.dir[1] * mid - f.n[1] * gap];
+      const t = el('text', { x: p[0], y: p[1], class: 'p-wallname' }, svg);
+      const kw = run.parts.find(isKitchenWall);
+      t.textContent = run.parts.length > 1 ? `${wallName(d.openWall, kw!)} · 거실까지 ${run.L.toLocaleString('ko-KR')}` : `${anyWallName(d, w)} ${run.L.toLocaleString('ko-KR')}`;
+      if (run.parts.length > 1) el('title', {}, t).textContent = run.parts.map((x) => `${anyWallName(d, x)} ${wallLine(d, x)!.L.toLocaleString('ko-KR')}`).join(' + 문턱 두께 150 + ');
+      else if (run.band) el('title', {}, t).textContent = `${anyWallName(d, w)} ${f.L.toLocaleString('ko-KR')} + 트인 쪽 끝 거실 어깨 벽 두께 ${run.band}`;
+      // 화면에서 벽 방향으로 — 거꾸로 읽히지 않게 (-90, 90] 으로
+      let s = (((Math.atan2(f.dir[1], f.dir[0]) * 180) / Math.PI + this.angle) % 360 + 360) % 360;
+      if (s > 90 && s <= 270) s -= 180; else if (s > 270) s -= 360;
+      t.setAttribute('transform', `rotate(${s - this.angle} ${p[0]} ${p[1]})`);
+      t.dataset.along = '1';
+      // 벽 바로 바깥(벽 두께 75 + 35)에서 바깥쪽으로 자라게 — 글씨 크기가 화면 따라 바뀌어도 벽 · 방을 덮지 않는다
+      const rot = (v: number[], deg: number) => { const a = (deg * Math.PI) / 180; return [v[0] * Math.cos(a) - v[1] * Math.sin(a), v[0] * Math.sin(a) + v[1] * Math.cos(a)]; };
+      const out = rot([-f.n[0], -f.n[1]], this.angle), up = rot([0, -1], s);
+      t.setAttribute('dominant-baseline', out[0] * up[0] + out[1] * up[1] > 0 ? 'ideographic' : 'hanging');
     }
     this.drawFlow(top, svg);
+    this.drawMep(svg);
     this.uprightText();
   }
 
@@ -291,7 +334,18 @@ export class PlanView {
       const n = (v: number) => v.toLocaleString('ko-KR');
       this.flowBox.innerHTML = !fl ? '' : [
         fl.legs.length === 3 ? `<span class="${fl.triOk ? '' : 'bad'}" title="권장: 각 변 1,200~2,700 · 합 4,000~7,900">작업 삼각형 <b>${n(fl.triTotal)}</b> <small>(${fl.legs.map((l) => `<i class="${l.ok ? '' : 'bad'}">${n(l.len)}</i>`).join(' · ')})</small></span>` : '',
-        fl.minAisle != null ? `<span class="${fl.minAisle < 900 ? 'bad' : ''}" title="900 미만 좁음 · 1,070 이상 작업 통로 · 1,220 이상 2인 작업">통로 최소 <b>${n(fl.minAisle)}</b></span>` : '',
+        fl.minAisle != null ? (() => {
+          // 통로 — 기준(작업 · 끝 통로)보다 좁은 곳 수. 기준은 오른쪽 패널 「통로 · 여유 기준」
+          const low = fl.aisles.filter((a) => a.w < a.need), cl = clearOf(this.d!);
+          return `<span class="${low.length ? 'bad' : ''}" title="기준: 작업 통로 ${n(cl.front)} · 아일랜드 끝 통로 ${n(cl.end)}${low.length ? `\n모자람: ${low.map((a) => `${n(a.w)}(기준 ${n(a.need)}${a.wall ? ' · 벽까지' : ''})`).join(', ')}` : ''}">통로 최소 <b>${n(fl.minAisle)}</b>${low.length ? ` · 기준 미달 ${low.length}곳` : ''}</span>`;
+        })() : '',
+        (() => {
+          // 쿡탑 양옆 · 싱크볼 좌우 상판 여유
+          const low = fl.sides.filter((s) => !s.ok);
+          if (!fl.sides.length) return '';
+          const lab = (w: 'hob' | 'sink') => (w === 'hob' ? '쿡탑' : '싱크볼');
+          return `<span class="${low.length ? 'bad' : ''}" title="${fl.sides.map((s) => `${lab(s.what)} 옆 ${n(s.free)}${s.free > s.need ? '+' : ''} (기준 ${n(s.need)})`).join('\n')}">옆 여유 ${low.length ? `<b>모자람 ${low.length}</b>` : '<b>기준 안</b>'}</span>`;
+        })(),
         fl.path.length > 1 ? `<span class="${fl.blocked ? 'bad' : ''}" title="${fl.stops.map((s) => s.label).join(' → ')}">이동 <b>${(fl.pathLen / 1000).toFixed(1)}m</b>${fl.blocked ? ' (막힌 곳 있음)' : ''}</span>` : '',
       ].filter(Boolean).join('');
     }
@@ -320,21 +374,95 @@ export class PlanView {
       el('line', { x1: a.a[0], y1: a.a[1], x2: a.b[0], y2: a.b[1], class: `p-aisle ${a.grade}` }, g);
       const dx = a.b[0] - a.a[0], dz = a.b[1] - a.a[1], L = Math.hypot(dx, dz) || 1, nx = -dz / L * 60, nz = dx / L * 60;
       for (const p of [a.a, a.b]) el('line', { x1: p[0] - nx, y1: p[1] - nz, x2: p[0] + nx, y2: p[1] + nz, class: `p-aisle ${a.grade}` }, g);
-      const t = el('text', { x: (a.a[0] + a.b[0]) / 2, y: (a.a[1] + a.b[1]) / 2, class: `p-aisletxt ${a.grade}` }, g); t.textContent = a.w.toLocaleString('ko-KR');
+      const t = el('text', { x: (a.a[0] + a.b[0]) / 2, y: (a.a[1] + a.b[1]) / 2, class: `p-aisletxt ${a.grade}` }, g);
+      t.textContent = a.w < a.need ? `${a.w.toLocaleString('ko-KR')} / ${a.need.toLocaleString('ko-KR')}` : a.w.toLocaleString('ko-KR');
     }
+    // ④ 쿡탑 양옆 · 싱크볼 좌우 상판 여유 — 기준보다 모자란 쪽만(빨간 치수선 · 잰 값 / 기준)
+    for (const s of fl.sides) {
+      if (s.ok) continue;
+      el('line', { x1: s.a[0], y1: s.a[1], x2: s.b[0], y2: s.b[1], class: 'p-side-gap' }, g);
+      const dx = s.b[0] - s.a[0], dz = s.b[1] - s.a[1], L = Math.hypot(dx, dz) || 1, nx = -dz / L * 80, nz = dx / L * 80;
+      for (const p of [s.a, s.b]) el('line', { x1: p[0] - nx, y1: p[1] - nz, x2: p[0] + nx, y2: p[1] + nz, class: 'p-side-gap' }, g);
+      const t = el('text', { x: s.b[0] + dx / L * 40 + nx * 2.2, y: s.b[1] + dz / L * 40 + nz * 2.2, class: 'p-side-gaptxt' }, g);
+      t.textContent = `${s.what === 'hob' ? '쿡탑' : '싱크'} 옆 ${s.free} / ${s.need}`;
+    }
+  }
+
+  /** 설비 층 — 종류별 색 선(바닥 속 구간은 점선) · 기기 점 · 인입점(끌어 옮김 · 누르면 메뉴). 요약 줄 = 종류 칩 + 확인 수 */
+  private drawMep(svg: SVGGElement) {
+    const m: MepInfo | null = this.showMep && this.c && this.d ? mepOf(this.d, this.c) : null;
+    if (this.mepBox) {
+      if (!m) this.mepBox.innerHTML = '';
+      else {
+        const warn = m.checks.filter((x) => x.level === 'warn');
+        this.mepBox.innerHTML = SYS_LIST.map((k) => `<button data-ms="${k}" class="mep-chip${this.mepSys.has(k) ? ' on' : ''}" style="--c:${SYS_COLOR[k]}"><i></i>${SYS_LABEL[k]}</button>`).join('')
+          + (m.checks.length ? `<span class="${warn.length ? 'bad' : ''}" title="${m.checks.map((x) => `${x.level === 'warn' ? '⚠ ' : ''}${x.text}`).join('\n').replace(/"/g, '&quot;')}">확인 <b>${warn.length}</b>${m.checks.length > warn.length ? ` <small>· 안내 ${m.checks.length - warn.length}</small>` : ''}</span>` : '')
+          + '<small>가정 위치 · 시공 전 현장 확인</small>';
+        this.mepBox.querySelectorAll<HTMLElement>('[data-ms]').forEach((b) => b.addEventListener('click', () => {
+          const k = b.dataset.ms as Sys;
+          if (this.mepSys.has(k)) this.mepSys.delete(k); else this.mepSys.add(k);
+          this.onMepSys?.(this.mepSys); this.draw();
+        }));
+      }
+    }
+    if (!m) return;
+    const g = el('g', { class: 'p-mepl' }, svg);
+    const on = (k: Sys) => this.mepSys.has(k);
+    // 선 — 같은 높이 쪽(바닥 속 · 벽 · 천장)끼리 이어 그린다. 평면에서 길이 0 인(오르내리는) 구간은 건너뛴다
+    for (const r of m.runs) {
+      if (!on(r.sys)) continue;
+      let chunk: number[][] = [], floor = false;
+      const flush = () => { if (chunk.length > 1) el('polyline', { points: chunk.map((q) => q.join(',')).join(' '), class: `p-mep s-${r.sys}${r.sub ? ' u-' + r.sub : ''}${floor ? ' fl' : ''}` }, g); chunk = []; };
+      for (let i = 1; i < r.pts.length; i++) {
+        const a = r.pts[i - 1], b = r.pts[i];
+        if (Math.hypot(a[0] - b[0], a[2] - b[2]) < 1) continue;
+        const f = a[1] < 0 && b[1] < 0;
+        if (chunk.length && f !== floor) flush();
+        floor = f;
+        if (!chunk.length) chunk.push([a[0], a[2]]);
+        chunk.push([b[0], b[2]]);
+      }
+      flush();
+    }
+    const GLYPH: Record<string, string> = { faucet: '수', trap: '배', outlet: '콘', dedicated: '전', popup: '팝', valve: '밸', hood: '후', device: '·', junction: '합', light: '등' };
+    for (const n of m.nodes) {
+      if (!on(n.sys)) continue;
+      const ng = el('g', { class: `p-mepn k-${n.kind}`, style: `--c:${/온수/.test(n.label) ? HOT_COLOR : SYS_COLOR[n.sys]}` }, g);
+      el('circle', { cx: n.p[0], cy: n.p[2], r: n.kind === 'junction' ? 75 : 55 }, ng);
+      const t = el('text', { x: n.p[0], y: n.p[2] }, ng); t.textContent = GLYPH[n.kind] ?? '·';
+      el('title', {}, ng).textContent = n.label;
+    }
+    // 인입점 · 콘센트 — 끌어 옮기기(부엌 좌표로 저장, 벽 · 바닥에 붙음) · 누르면 메뉴
+    const IG: Record<string, string> = { drain: '배수', water: '급수', manifold: '분배', panel: '분전', gas: '가스', duct: '덕트', boiler: '보일' };
+    const sym = (ref: string, p: V3, color: string, txt: string, title: string, pinned: boolean) => {
+      const sg = el('g', { class: `p-mepi${pinned ? ' pinned' : ''}${this.selectedMep === ref ? ' sel' : ''}`, style: `--c:${color}` }, g);
+      el('rect', { x: p[0] - 120, y: p[2] - 95, width: 240, height: 190, rx: 45 }, sg);
+      const t = el('text', { x: p[0], y: p[2] }, sg); t.textContent = txt;
+      el('title', {}, sg).textContent = `${title}${pinned ? ' (옮긴 자리)' : ' (앱이 정한 자리)'} — 끌어서 옮기기 · 누르면 위치 입력`;
+      sg.addEventListener('pointerdown', (e) => {
+        e.stopPropagation();
+        this.downAt = { x: (e as PointerEvent).clientX, y: (e as PointerEvent).clientY };
+        this.mepDrag = { ref, moved: false, x: p[0], z: p[2] };
+        try { this.svg.setPointerCapture((e as PointerEvent).pointerId); } catch { /* 합성 이벤트 */ }
+      });
+    };
+    for (const i of m.inlets) if (on(i.sys)) sym(i.key, i.p, SYS_COLOR[i.sys], IG[i.key] ?? '?', i.label, i.pinned);
+    if (on('power')) for (const o of m.outlets) sym(`out:${o.id}`, o.p, SYS_COLOR.power, '콘', '콘센트', true);
   }
 
   /** 돌린 그림 속 글자를 똑바로 */
   private uprightText() {
     if (!this.root || !this.angle) return;
     for (const t of this.root.querySelectorAll('text')) {
+      if (t.dataset.along) continue;   // 벽 이름 · 길이는 벽 방향 그대로
       const x = t.getAttribute('x'), y = t.getAttribute('y');
       t.setAttribute('transform', `rotate(${-this.angle} ${x} ${y})`);
     }
   }
 
   private drawOpening(o: Opening) {
-    const d = this.d!, svg = this.root ?? this.svg, f = wallFrame(d.room, o.wall);
+    const d = this.d!, svg = this.root ?? this.svg, f = wallLine(d, o.wall);
+    if (!f) return;
     const P = (t: number, u: number) => [f.o[0] + f.dir[0] * t + f.n[0] * u, f.o[1] + f.dir[1] * t + f.n[1] * u];
     const g = el('g', { class: `p-op${this.selected === o.id ? ' sel' : ''}`, style: `--c:${OPENING_INFO[o.kind].color}` }, svg);
     // 추가 영역 — 장을 두지 않는 자리(벽에서 장 깊이 600 까지 빗금)
@@ -360,18 +488,17 @@ export class PlanView {
       }
       const m = P(o.t + o.w / 2, 380);
       const t = el('text', { x: m[0], y: m[1], class: 'p-optxt' }, g); t.textContent = `${o.w}`;
-      // 양옆 벽까지 거리 — 치수선 + 숫자
-      const WL = wallLength(d.room, o.wall);
-      for (const [a0, a1] of [[0, o.t], [o.t + o.w, WL]] as const) {
+      // 양옆 벽까지 거리 — 치수선 + 숫자. 한 줄로 이어진 벽(부엌 + 문턱 두께 + 거실)이면 이어진 벽 끝까지
+      const run = wallRun(d, o.wall), e0 = -run.off, e1 = run.L - run.off;
+      for (const [a0, a1] of [[e0, o.t], [o.t + o.w, e1]] as const) {
         if (a1 - a0 < 1) continue;
         const p0 = P(a0, 250), p1 = P(a1, 250), mm = P((a0 + a1) / 2, 380);
         el('line', { x1: p0[0], y1: p0[1], x2: p1[0], y2: p1[1], class: 'p-opdim' }, g);
         const dt = el('text', { x: mm[0], y: mm[1], class: 'p-opdimtxt' }, g); dt.textContent = `${Math.round(a1 - a0)}`;
       }
-      const L = wallLength(d.room, o.wall);
-      const ta = P(o.t / 2, 220), tb = P(o.t + o.w + (L - o.t - o.w) / 2, 220);
-      const t1 = el('text', { x: ta[0], y: ta[1], class: 'p-dist' }, g); t1.textContent = `${Math.round(o.t)}`;
-      const t2 = el('text', { x: tb[0], y: tb[1], class: 'p-dist' }, g); t2.textContent = `${Math.round(L - o.t - o.w)}`;
+      const ta = P((e0 + o.t) / 2, 220), tb = P((o.t + o.w + e1) / 2, 220);
+      const t1 = el('text', { x: ta[0], y: ta[1], class: 'p-dist' }, g); t1.textContent = `${Math.round(o.t - e0)}`;
+      const t2 = el('text', { x: tb[0], y: tb[1], class: 'p-dist' }, g); t2.textContent = `${Math.round(e1 - o.t - o.w)}`;
     }
   }
 
@@ -379,7 +506,7 @@ export class PlanView {
     e.stopPropagation();
     this.selected = o.id; this.onSelect?.(o.id);
     const [x, z] = this.pt(e);
-    const nw = nearestWall(this.d!.room, x, z, this.d!.openWall);
+    const nw = nearestAnyWall(this.d!, x, z);
     this.downAt = { x: e.clientX, y: e.clientY };
     this.drag = { id: o.id, mode, offset: nw.wall === o.wall ? nw.t - o.t : o.w / 2, start: { ...o }, moved: false };
     try { this.svg.setPointerCapture(e.pointerId); } catch { /* 합성 이벤트 */ }
@@ -408,6 +535,13 @@ export class PlanView {
       this.applyView();
       return;
     }
+    if (this.mepDrag) {
+      if (!this.mepDrag.moved && !this.far(e)) return;
+      const [x, z] = this.pt(e);
+      Object.assign(this.mepDrag, { moved: true, x, z });
+      this.onMepMove?.(this.mepDrag.ref, x, z, false);
+      return;
+    }
     if (this.itemDrag) {
       if (!this.itemDrag.moved && !this.far(e)) return;
       Object.assign(this.itemDrag, { p: this.pt(e), moved: true });
@@ -431,14 +565,14 @@ export class PlanView {
     const snap = (v: number) => Math.round(v / 10) * 10;
     let patch: Partial<Opening>;
     if (this.drag.mode === 'move') {
-      const nw = nearestWall(d.room, Math.max(0, Math.min(d.room.w, x)), Math.max(0, Math.min(d.room.d, z)), d.openWall);
+      const nw = nearestAnyWall(d, x, z);
       patch = { wall: nw.wall, t: snap(nw.t - this.drag.offset) };
     } else {
-      const f = wallFrame(d.room, s.wall);
+      const f = wallLine(d, s.wall)!;
       const t = (x - f.o[0]) * f.dir[0] + (z - f.o[1]) * f.dir[1];
       patch = this.drag.mode === 'a' ? { t: snap(Math.min(t, s.t + s.w - OPENING_INFO[s.kind].minW)), w: snap(s.t + s.w - Math.min(t, s.t + s.w - OPENING_INFO[s.kind].minW)) } : { w: snap(Math.max(OPENING_INFO[s.kind].minW, t - s.t)) };
     }
-    const tmp = { ...o, ...patch }; clampOpening(tmp, d.room);
+    const tmp = { ...o, ...patch }; clampOpening(tmp, d);
     this.onChange?.(o.id, { wall: tmp.wall, t: tmp.t, w: tmp.w }, false);
   }
   private up(e: PointerEvent) {
@@ -447,7 +581,8 @@ export class PlanView {
       try { this.svg.releasePointerCapture(e.pointerId); } catch { /* 합성 이벤트 */ }
       if (!p.moved && p.clear) {
         // 고른 것이 있으면 해제만, 없으면 누른 공간으로 3D 시점 이동(사용자 2026-11-05 「공간 선택하면 해당 공간으로 이동 꽉 차게」)
-        const had = !!(this.selected || this.picked || this.islandPicked || this.pickedWall != null);
+        const had = !!(this.selected || this.picked || this.islandPicked || this.pickedWall != null || this.selectedMep);
+        if (this.selectedMep) { this.selectedMep = null; this.onMepPick?.(null); }
         this.selected = null; this.picked = null; this.onSelect?.(null); this.onPickItem?.(null); this.draw();
         if (!had && p.space) {
           const xs: number[] = [], zs: number[] = [];
@@ -456,6 +591,13 @@ export class PlanView {
           if (xs.length) this.onSpace?.([Math.min(...xs), Math.min(...zs), Math.max(...xs), Math.max(...zs)]);
         }
       }
+      return;
+    }
+    if (this.mepDrag) {
+      const m = this.mepDrag; this.mepDrag = undefined;
+      try { this.svg.releasePointerCapture(e.pointerId); } catch { /* 합성 이벤트 */ }
+      if (m.moved) this.onMepMove?.(m.ref, m.x, m.z, true);
+      else { this.selectedMep = m.ref; this.onMepPick?.(m.ref); this.draw(); }
       return;
     }
     if (this.itemDrag) {

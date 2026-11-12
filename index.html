@@ -16,6 +16,7 @@
         <button data-view="front" data-tip="정면"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3.5" y="4.5" width="17" height="15" rx="1.5"/><path d="M3.5 12h17M9.2 12v7.5M14.8 12v7.5"/></svg></button>
         <button id="t-doors" data-tip="문 열기"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="M5 3.5h9v17H5z"/><path d="M14 3.5l5 2.5v16l-5-1.5"/><path d="M11.5 12h.01"/></svg></button>
         <button id="t-look" data-tip="보기"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/></svg></button>
+        <button id="t-mep" data-tip="설비 보기"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 7.5h7v9h10"/><path d="M3.5 4.5v6M20.5 13.5v6"/><path d="M14 16.5v-4"/><circle cx="14" cy="10.5" r="1.8"/></svg></button>
         <button id="t-path" data-tip="실사"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M11 3.5l1.8 5.2 5.2 1.8-5.2 1.8L11 17.5l-1.8-5.2L4 10.5l5.2-1.8z"/><path d="M18.5 15l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z"/></svg></button>
         <button id="t-sun" data-tip="조명"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2.2M12 19.3v2.2M2.5 12h2.2M19.3 12h2.2M5.3 5.3l1.6 1.6M17.1 17.1l1.6 1.6M5.3 18.7l1.6-1.6M17.1 6.9l1.6-1.6"/></svg></button>
         <button id="t-post" data-tip="후처리"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg></button>
@@ -26,6 +27,11 @@
         <div class="sun-title">보기</div>
         <button data-look="mat" class="on"><b>재질</b><small>원본 모델 재질 그대로</small></button>
         <button data-look="line"><b>재질+라인</b><small>재질 위에 모서리 선</small></button>
+      </div>
+      <div id="mep-pop" class="mode-pop" hidden>
+        <div class="sun-title">설비 보기 <small>체크한 설비를 투시하듯 — 장 · 벽은 반투명 · 실시간에서만</small></div>
+        <div id="mep-checks" class="mep-checks"></div>
+        <div class="mep-pop-acts"><button data-mep3="all" class="btn-mini">전부</button><button data-mep3="none" class="btn-mini light">끄기</button></div>
       </div>
       <div id="render-pop" class="mode-pop" hidden>
         <div class="sun-title">실사 렌더 <small>붙박이장 플래너와 같은 방식</small></div>
@@ -70,10 +76,11 @@
       </div>
       <div id="post-panel" hidden></div>
       <div id="plan-box">
-        <div class="plan-head"><b>평면도</b><small>휠 확대 · 빈 곳 끌어 이동 · 더블클릭 맞춤</small><span class="plan-zoom"><button id="pz-flow" class="on" title="동선 정보 — 작업 삼각형 변 길이 · 통로 폭 · 이동 경로">동선</button><button data-pz="in" title="확대">+</button><button data-pz="out" title="축소">−</button><button data-pz="fit" title="방 전체 맞춤">맞춤</button></span></div>
+        <div class="plan-head"><b>평면도</b><small>휠 확대 · 빈 곳 끌어 이동 · 더블클릭 맞춤</small><span class="plan-zoom"><button id="pz-flow" class="on" title="동선 정보 — 작업 삼각형 변 길이 · 통로 폭 · 이동 경로">동선</button><button id="pz-mep" title="설비 — 급수 · 배수 · 전기 · 가스 · 배기 · 난방 (인입점은 끌어 옮기기)">설비</button><button data-pz="in" title="확대">+</button><button data-pz="out" title="축소">−</button><button data-pz="fit" title="방 전체 맞춤">맞춤</button></span></div>
         <div class="plan-resize" title="끌어서 평면도 창 크기 조절"></div>
         <div id="plan"></div>
         <div id="plan-flow" class="plan-flow"></div>
+        <div id="plan-mep" class="plan-flow plan-mep"></div>
       </div>
       <!-- 프롬프트 — 붙박이장 플래너처럼 화면 아래에 떠 있음 -->
       <div id="prompt-bar">
@@ -132,6 +139,15 @@
       <label class="switch"><input id="fridge-on" type="checkbox" checked><span></span>냉장고장 <small>끄면 냉장고 · 키큰장 묶음 없이</small></label>
       <label class="switch"><input id="dining" type="checkbox"><span></span>식탁 <small>한샘 식탁 · 식탁의자</small></label>
       <div id="dining-box" class="dining-box" hidden></div>
+      <details id="clear-box" class="clear-box">
+        <summary>통로 · 여유 기준 <small id="clear-sub">자동 배치 · 평면도 검사에 씀</small></summary>
+        <div id="clear-rows" class="clear-rows"></div>
+        <div class="clear-foot"><button id="clear-reset" class="btn-mini light">기본값으로</button><small>기본: 기준 글(작업 통로 1,200 · 쿡탑 아일랜드 1,800 · 양옆 300) · 끝 통로 900</small></div>
+      </details>
+      <details id="mep-box" class="clear-box mep-box">
+        <summary>설비 <small id="mep-sub">급수 · 배수 · 전기 · 가스 · 배기 · 난방</small></summary>
+        <div id="mep-rows" class="mep-rows"></div>
+      </details>
 
       <h2><i>3</i>공간 요소 <small>있는 것을 체크 · 화면에서 끌어 옮기고, 누르면 크기 메뉴</small></h2>
       <div id="kinds" class="kinds"></div>

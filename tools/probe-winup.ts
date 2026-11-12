@@ -12,7 +12,8 @@ for (const layout of ['L', 'I', 'U'] as const) for (const t of [300, 800, 1300, 
   win.t = t; win.w = w; win.h = h; win.sill = 1050;
   const c = autoPlan(d, cat, 'EO')[0]; if (!c) continue;
   const L = wallLength(d.room, win.wall);
-  const up = c.items.filter((i) => i.wall === win.wall && i.level === 'wall').sort((a, b) => a.t - b.t);
+  // 냉장고 · 키큰장 묶음의 키큰 EP(바닥 ~ 천장)도 상부 줄 틈을 메운다 — 냉장고 윗장과 상부장 사이 20 은 빈틈이 아니다
+  const up = c.items.filter((i) => i.wall === win.wall && (i.level === 'wall' || (i.tag === 'ep' && i.level === 'tall'))).sort((a, b) => a.t - b.t);
   const gaps: string[] = [];
   for (let i = 1; i < up.length; i++) { const g = up[i].t - (up[i - 1].t + up[i - 1].w); if (g > 1) gaps.push(`${Math.round(up[i - 1].t + up[i - 1].w)}~${Math.round(up[i].t)}`); }
   const hs = [...new Set(up.filter((i) => i.tag !== 'ep').map((i) => i.ov?.NSTD_H ?? '720'))];

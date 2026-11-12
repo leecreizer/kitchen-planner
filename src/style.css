@@ -94,7 +94,8 @@ input { font: inherit; }
 #item-info .ii-row input { width: 100%; min-width: 0; box-sizing: border-box; height: 32px; border: 1px solid #ccc; border-radius: 6px; padding: 0 8px; font-size: 13px; }
 .p-open { stroke: #9aa3ad; stroke-width: 60; stroke-dasharray: 120 90; }
 .p-livingtxt { font-size: 150px; text-anchor: middle; dominant-baseline: middle; fill: #7a838d; font-weight: 600; }
-.p-wallname { font-size: 120px; text-anchor: middle; dominant-baseline: middle; fill: #fff; font-weight: 600; }
+/* 벽 이름 · 길이 — 도면 150mm, 작은 평면도에선 화면 12px 아래로 작아지지 않게(--u = 화면 1px 의 mm, plan2d) */
+.p-wallname { font-size: max(150px, calc(var(--u, 10) * 12px)); text-anchor: middle; fill: #2b2f33; font-weight: 700; paint-order: stroke; stroke: #fff; stroke-width: max(36px, calc(var(--u, 10) * 3px)); pointer-events: none; }
 
 #status { position: absolute; left: 50%; top: 16px; transform: translateX(-50%); background: rgba(17,17,17,.82); color: #fff; font-size: 13px; padding: 7px 14px; border-radius: 16px; z-index: 6; }
 #status[hidden] { display: none; }
@@ -288,6 +289,39 @@ input { font: inherit; }
 .dining-box .ii-seg button:disabled { opacity: .35; cursor: default; }
 .dining-box select { height: 30px; border: 1px solid #ccc; border-radius: 6px; padding: 0 6px; font-size: 12px; background: #fff; }
 .dining-box .isl-note { font-size: 11px; color: var(--mute); }
+/* 통로 · 여유 기준 — 오른쪽 패널 2 공간 구조 아래(접어 둠). 바꾼 값은 굵게 */
+.clear-box { margin: 8px 0 10px; border: 1px solid var(--line, #e3e3e3); border-radius: 10px; padding: 8px 12px; font-size: 12px; }
+.clear-box summary { cursor: pointer; font-weight: 600; }
+.clear-box summary small { font-weight: 400; color: var(--mute); margin-left: 6px; }
+.clear-rows { display: grid; gap: 6px; margin-top: 8px; }
+.clear-rows label { display: grid; grid-template-columns: 1fr 84px auto; align-items: center; gap: 6px; color: var(--sub); }
+.clear-rows label.on span, .clear-rows label.on input { font-weight: 700; color: #111; }
+.clear-rows input { height: 28px; border: 1px solid #ddd; border-radius: 6px; padding: 0 6px; font-size: 12px; width: 100%; }
+.clear-rows small { color: var(--mute); font-size: 11px; white-space: nowrap; }
+.clear-foot { display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+.clear-foot small { color: var(--mute); font-size: 11px; }
+/* 설비 메뉴 — 인입점 · 일반 콘센트 · 확인 목록 */
+.mep-rows { display: grid; gap: 4px; margin-top: 8px; }
+.mep-label { display: flex; align-items: center; gap: 6px; margin-top: 6px; font-weight: 600; color: #333; }
+.mep-label small { font-weight: 400; color: var(--mute); }
+.mep-label .btn-mini { margin-left: auto; }
+.mep-row { display: flex; align-items: center; gap: 6px; color: var(--sub); }
+.mep-row i { width: 10px; height: 10px; border-radius: 3px; background: var(--c); flex: none; }
+.mep-row .link { border: 0; background: none; padding: 0; font: inherit; color: #222; cursor: pointer; text-decoration: underline dotted; }
+.mep-row small { color: var(--mute); font-size: 11px; }
+.mep-row .btn-mini { margin-left: auto; }
+.mep-check { font-size: 11.5px; line-height: 1.45; color: #555; padding: 3px 6px; border-radius: 6px; background: #f6f6f4; }
+.mep-check.warn { color: #9a4a12; background: #fdf1e6; }
+.mep-note { font-size: 11px; color: var(--mute); margin-top: 6px; line-height: 1.4; }
+#cands li.warn.mep { color: #9a4a12; }
+/* 3D 설비 보기 — 체크 목록 · 이름표 */
+.mep-checks { display: grid; gap: 4px; margin: 4px 0 8px; }
+.mep-checks label { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border-radius: 8px; cursor: pointer; font-size: 13px; }
+.mep-checks label:hover { background: #f4f4f2; }
+.mep-checks input { margin: 0; }
+.mep-checks i { width: 14px; height: 6px; border-radius: 3px; background: var(--c); }
+.mep-pop-acts { display: flex; gap: 6px; }
+.mep3d-lab { position: absolute; z-index: 4; transform: translate(-50%, -140%); pointer-events: none; white-space: nowrap; font-size: 11px; font-weight: 600; color: #222; background: rgba(255,255,255,.9); border: 1px solid #c9c9c9; border-radius: 8px; padding: 1px 6px; }
 
 #item-info .fk-list { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 4px; }
 #item-info .fk-list button { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; border: 1px solid #ccc; background: #fff; border-radius: 8px; padding: 7px 9px; cursor: pointer; text-align: left; }
@@ -362,6 +396,10 @@ input { font: inherit; }
 /* 회전 고리 옆 지금 각도 */
 .rot-deg { position: absolute; z-index: 5; transform: translate(-50%, -50%); font-size: 13px; font-weight: 700; color: #fff; background: #2f6bff; padding: 2px 7px; border-radius: 10px; box-shadow: 0 1px 4px rgba(0,0,0,.25); pointer-events: none; white-space: nowrap; }
 .rot-deg[hidden] { display: none; }
+/* 3D 치수 숫자 칸 — 고른 창 · 문 · 공간의 벽까지 거리 · 창대 높이(scene.setDims). 눌러 고치고 Enter */
+.dim3 { position: absolute; z-index: 5; transform: translate(-50%, -50%); width: 66px; height: 24px; padding: 0 4px; border: 1.5px solid #2f6bff; border-radius: 12px; background: #fff; color: #1f4fd8; font-size: 12px; font-weight: 700; text-align: center; box-shadow: 0 1px 4px rgba(0,0,0,.2); -moz-appearance: textfield; }
+.dim3::-webkit-inner-spin-button, .dim3::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+.dim3:focus { outline: none; border-color: #111; color: #111; }
 
 /* 동선 정보 — 평면도에 겹친 층(눌러지지 않음) · 아래 요약 줄 */
 .p-flow { pointer-events: none; }
@@ -376,14 +414,37 @@ input { font: inherit; }
 .p-aisle.narrow { stroke: #d33; } .p-aisle.walk { stroke: #e0a12b; }
 .p-aisletxt { font-size: 115px; text-anchor: middle; dominant-baseline: central; fill: #2a9d5c; font-weight: 700; paint-order: stroke; stroke: #fff; stroke-width: 30px; }
 .p-aisletxt.narrow { fill: #d33; } .p-aisletxt.walk { fill: #c98a12; }
+/* 쿡탑 양옆 · 싱크볼 좌우 상판 여유가 기준보다 모자란 쪽(clearance.ts) */
+.p-side-gap { stroke: #d33; stroke-width: 22; }
+.p-side-gaptxt { font-size: 110px; text-anchor: middle; dominant-baseline: central; fill: #d33; font-weight: 700; paint-order: stroke; stroke: #fff; stroke-width: 30px; }
 .plan-flow { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 11px; color: #444; margin-top: 4px; }
 .plan-flow:empty { display: none; }
 .plan-flow b { font-weight: 700; } .plan-flow small { color: var(--mute); } .plan-flow i { font-style: normal; }
 .plan-flow .bad, .plan-flow .bad b, .plan-flow i.bad { color: #e0712b; }
+/* 설비 층(평면도) — 종류 색 선(바닥 속 = 점선) · 기기 점 · 인입점(끌기) */
+#viewport.v2d #plan-mep { order: 1; margin: 0 0 6px; }
+.plan-mep .mep-chip { display: inline-flex; align-items: center; gap: 4px; padding: 1px 7px; border: 1px solid #d5d8dd; border-radius: 10px; background: #fff; color: #888; font-size: 11px; cursor: pointer; }
+.plan-mep .mep-chip i { width: 9px; height: 9px; border-radius: 2px; background: var(--c); opacity: .35; }
+.plan-mep .mep-chip.on { color: #222; border-color: var(--c); } .plan-mep .mep-chip.on i { opacity: 1; }
+.p-mep { fill: none; stroke-width: 26; stroke-linecap: round; stroke-linejoin: round; opacity: .92; pointer-events: none; }
+.p-mep.s-water { stroke: #2f7bf6; } .p-mep.s-water.u-hot { stroke: #ef4444; }
+.p-mep.s-drain { stroke: #8b5e3c; stroke-width: 34; }
+.p-mep.s-power { stroke: #f08c00; stroke-width: 14; }
+.p-mep.s-gas { stroke: #d4a800; stroke-width: 22; }
+.p-mep.s-vent { stroke: #64748b; stroke-width: 70; opacity: .45; }
+.p-mep.s-heat { stroke: #9b4dff; } .p-mep.s-heat.u-return { stroke: #c99bff; }
+.p-mep.fl { stroke-dasharray: 90 60; }
+.p-mepn { pointer-events: none; }
+.p-mepn circle { fill: #fff; stroke: var(--c); stroke-width: 16; }
+.p-mepn.k-junction circle { fill: var(--c); fill-opacity: .18; stroke-dasharray: 30 20; }
+.p-mepn text { font-size: 64px; font-weight: 700; fill: var(--c); text-anchor: middle; dominant-baseline: central; pointer-events: none; }
+.p-mepi { cursor: grab; }
+.p-mepi rect { fill: var(--c); stroke: #fff; stroke-width: 14; }
+.p-mepi text { font-size: 92px; font-weight: 700; fill: #fff; text-anchor: middle; dominant-baseline: central; pointer-events: none; }
+.p-mepi.pinned rect { stroke: #111; stroke-width: 18; }
+.p-mepi.sel rect { stroke: #2f6bff; stroke-width: 30; }
 .plan-zoom #pz-flow.on { background: #111; color: #fff; border-color: #111; }
 /* 단면 자료가 없어 깨져 보이는 도어 — 고르지 못함 */
-.sw.nodata { opacity: .45; cursor: not-allowed; filter: grayscale(.7); }
-.sw.nodata span { color: #c0392b; }
 
 /* WebGPU 장치가 끊겼을 때 — 다시 불러오기 안내(three 는 끊기면 3D 를 다시 그리지 않는다) */
 #gpu-lost { position: absolute; left: 50%; top: 45%; transform: translate(-50%, -50%); z-index: 20; background: rgba(17,17,17,.9); color: #fff; font-size: 14px; padding: 14px 18px; border-radius: 12px; display: flex; gap: 12px; align-items: center; }
