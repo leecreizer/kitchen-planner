@@ -2,6 +2,7 @@
 import { devact, devlog, recentActs } from './devlog';   // 개발 서버 기록(오류 · 3D 상태) — 다른 모듈보다 먼저
 import { applyNonStandard, autoPlan, upperBottomOf, FRIDGE_SPEC, fridgeSpec, STYLE_LABEL, widthsOf, wallBlocks, BASE_D, WALL_D, CORNER_D, COUNTER_D, type Candidate, type Frame, type Item } from './autoplan';
 import { buildKitchen, buildSplashes, setDoors, type KitchenObj } from './kitchen3d';
+import { splashLayout } from './splash';
 import type { DoorPart } from './cabinet3d';
 import { doorGaps, loadCatalog, texUrl, usableDoors, type DoorDef, type GradeDef, type KitchenCatalog, type ModuleDef } from './kjlLib';
 import { DINING_SETS, DINING_SHAPES, buildDining, diningOf, diningPlace } from './dining3d';
@@ -2905,17 +2906,18 @@ function pickWallEnd(id: number, p: [number, number]) {
   });
 }
 stage.onPickWallEnd = pickWallEnd;
-/* 벽 마감 — 상판 ~ 상부장 사이 벽. 3D 에서 누르면 타일 · 벽판넬과 치수(길이 · 두께 · 높이 · 배치 높이 · 시작 위치) */
+/* 벽 마감 — 장 줄이 있는 벽 전체(상부장 아래까지 · 없으면 천장까지, splashLayout). 3D 에서 누르면 타일 · 벽판넬과 치수(길이 · 두께 · 높이 · 배치 높이 · 시작 위치) */
 function pickSplash(w: number) {
   if (!current) return;
   const wall = w as WallId;
   pick(null);
   const segs = current.splashes.filter((s) => current!.items.some((it) => it.frame === s.frame && it.wall === wall));
   if (!segs.length) return;
-  const a0 = Math.min(...segs.map((s) => s.t0)), a1 = Math.max(...segs.map((s) => s.t1));
+  // 자동 구간 = 벽 길이 전체(거실 어깨 벽 두께까지) · 자동 높이 = 상부장 아래(없으면 천장)까지
+  const [a0, a1] = cabSpan(d, wall), autoH = splashLayout(current, d).find((s) => s.wall === wall && s.pieces.length)?.H ?? SPLASH_DEFAULT.h;
   const cfg: SplashCfg = { kind: 'tile', ...(d.splash?.[wall] ?? {}) };
   const panel = cfg.kind === 'panel';
-  const v = { t0: cfg.t0 ?? a0, len: cfg.len ?? a1 - (cfg.t0 ?? a0), depth: cfg.depth ?? (panel ? SPLASH_DEFAULT.panelDepth : SPLASH_DEFAULT.tileDepth), h: cfg.h ?? SPLASH_DEFAULT.h, y: cfg.y ?? 910 };
+  const v = { t0: cfg.t0 ?? a0, len: cfg.len ?? a1 - (cfg.t0 ?? a0), depth: cfg.depth ?? (panel ? SPLASH_DEFAULT.panelDepth : SPLASH_DEFAULT.tileDepth), h: cfg.h ?? autoH, y: cfg.y ?? 910 };
   const pmat = cfg.mat ?? d.counter;
   const sg = stage.kitchen?.getObjectByName('splash')?.children.find((o) => o.userData.wall === wall);
   stage.highlight(sg ?? null);
@@ -2923,14 +2925,14 @@ function pickSplash(w: number) {
   const inp = (k: keyof typeof v, label: string, dis = false) => `<label>${label}<input data-sp="${k}" type="number" step="${k === 'depth' ? 1 : 10}" value="${Math.round(v[k])}"${dis ? ' disabled' : ''}></label>`;
   box.innerHTML = `
     <div class="ii-head"><b>벽 마감 · ${wallName(d.openWall, wall)}</b><button title="닫기">×</button></div>
-    <div class="ii-model">상판 위 ~ 상부장 아래 벽 · 자동 구간 ${Math.round(a0)}~${Math.round(a1)} · 시작 위치 · 길이를 넣으면 벽 안에서 그 구간 그대로(줄눈도 거기서 시작)</div>
+    <div class="ii-model">벽 길이 전체 ${Math.round(a0)}~${Math.round(a1)} · 상부장이 있으면 그 아래까지, 없으면 천장까지 · 시작 위치 · 길이 · 높이를 넣으면 그 값 그대로(줄눈도 거기서 시작)</div>
     <div class="ii-seg"><button data-spk="tile" class="${!panel ? 'on' : ''}">타일</button><button data-spk="panel" class="${panel ? 'on' : ''}">벽판넬</button></div>
     ${panel ? `<div class="ii-label">벽판넬 재질 <small>상판 재질 — 카탈로그 세라믹 벽판넬 6T</small></div>
     <div class="ii-swap">${cat.counters.map((x) => `<button data-spm="${x.id}" class="${x.id === pmat ? 'on' : ''}">${x.name}</button>`).join('')}</div>` : ''}
     <div class="ii-row">${inp('t0', '시작 위치 (벽 시작에서)')}${inp('len', '길이')}</div>
     <div class="ii-row">${inp('h', '높이')}${inp('y', '배치 높이 (바닥에서)')}</div>
     <div class="ii-row">${inp('depth', '두께', !panel)}<label>&nbsp;<button data-spr class="plain">자동으로</button></label></div>
-    <div class="ii-note">${panel ? '벽판넬은 벽에 붙인 판 — 창 자리는 창 몰딩 아래까지' : '타일 두께는 표현만(벽에 붙임)'} · 자동 = 상판 줄 길이 · 높이 620 · 상판 위</div>`;
+    <div class="ii-note">${panel ? '벽판넬은 벽에 붙인 판 — 창 자리는 창 몰딩 아래까지' : '타일 두께는 표현만(벽에 붙임)'} · 자동 = 벽 길이 전체 · 상부장 아래(없으면 천장)까지 · 하부장 없는 곳은 바닥부터</div>`;
   box.hidden = false;
   const apply = (next: SplashCfg | null) => {
     const all = { ...(d.splash ?? {}) };
@@ -2951,7 +2953,7 @@ function pickSplash(w: number) {
     else if (k === 'h') next.h = Math.max(50, Math.min(d.room.h, n));
     else if (k === 'y') next.y = Math.max(0, Math.min(d.room.h - 50, n));
     else if (k === 'len') { next.len = Math.max(50, n); next.t0 = v.t0; }
-    else next.t0 = Math.max(0, n);
+    else next.t0 = Math.max(a0, n);
     apply(next);
   }));
 }

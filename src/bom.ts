@@ -7,7 +7,8 @@ import { FRIDGE_SPEC, fridgeSpec, upperBottomOf, upperTopOf, WALL_D } from './au
 import { applianceOf, APPLIANCE_CATS, type ApplianceCat } from './catalog';
 import { diningOf } from './dining3d';
 import type { GradeDef, KitchenCatalog } from './kjlLib';
-import { SPLASH_DEFAULT, wallName, type Design } from './plan';
+import { wallName, type Design } from './plan';
+import { splashLayout } from './splash';
 
 export interface BomRow {
   구분: string; 품목: string; 원본ID: string; 원본이름: string; 원본파일: string; 한샘코드: string;
@@ -51,14 +52,15 @@ export function buildBom(d: Design, c: Candidate, cat: KitchenCatalog, grade: Gr
     out.push(row({ 구분: '상판', 품목: k.island ? '아일랜드 상판' : '상판', 원본ID: d.counter, 원본이름: counter?.name ?? '', W: L, D: Dp, H: 30, 규격: `${L}×${Dp}×30`, 재질: counter?.name ?? d.counter, 수량: +(L * Dp / 1e6).toFixed(3), 단위: '㎡', 비고: c.items.some((x) => x.tag === 'sink' && x.frame === k.frame) ? '싱크볼 타공' : '' }));
   }
 
-  // ③ 벽 마감(타일 · 벽판넬) — 상판 위 ~ 상부장 아래
+  // ③ 벽 마감(타일 · 벽판넬) — 벽 길이 전체 · 상부장 아래(없으면 천장)까지. 실제 깔리는 조각(splashLayout) 넓이 합 — 창 · 문 구멍 · 키큰장 뒤는 빠진다
   const tile = cat.tiles.find((x: { id: string }) => x.id === d.tile) as { id: string; name: string } | undefined;
-  for (const s of c.splashes) {
-    const w = c.items.find((x) => x.frame === s.frame && x.wall != null)?.wall;
-    const cfg = w != null ? d.splash?.[w] : undefined;
-    const L = Math.round(cfg?.len ?? s.t1 - s.t0), Hh = cfg?.h ?? SPLASH_DEFAULT.h;
-    const panel = cfg?.kind === 'panel';
-    out.push(row({ 구분: '벽 마감', 품목: panel ? '벽판넬' : '타일', 원본ID: panel ? cfg?.mat ?? d.counter : d.tile, 원본이름: panel ? (cat.counters.find((x: { id: string }) => x.id === (cfg?.mat ?? d.counter)) as { name: string } | undefined)?.name ?? '' : tile?.name ?? '', W: L, H: Hh, 규격: `${L}×${Hh}`, 수량: +(L * Hh / 1e6).toFixed(3), 단위: '㎡', 위치: w != null ? wallName(d.openWall, w) : '' }));
+  for (const sg of splashLayout(c, d)) {
+    if (!sg.pieces.length) continue;
+    const w = sg.wall, cfg = w != null ? d.splash?.[w] : undefined, panel = cfg?.kind === 'panel';
+    const L = Math.round(Math.max(...sg.pieces.map((p) => p[1])) - Math.min(...sg.pieces.map((p) => p[0])));
+    const Hh = Math.round(Math.max(...sg.pieces.map((p) => p[3])) - Math.min(...sg.pieces.map((p) => p[2])));
+    const area = sg.pieces.reduce((a, p) => a + (p[1] - p[0]) * (p[3] - p[2]), 0);
+    out.push(row({ 구분: '벽 마감', 품목: panel ? '벽판넬' : '타일', 원본ID: panel ? cfg?.mat ?? d.counter : d.tile, 원본이름: panel ? (cat.counters.find((x: { id: string }) => x.id === (cfg?.mat ?? d.counter)) as { name: string } | undefined)?.name ?? '' : tile?.name ?? '', W: L, H: Hh, 규격: `${L}×${Hh}`, 수량: +(area / 1e6).toFixed(3), 단위: '㎡', 위치: w != null ? wallName(d.openWall, w) : '', 비고: '깔리는 넓이 합(창 · 문 · 키큰장 자리 제외)' }));
   }
 
   // ④ 걸레받이 · 상부 몰딩(서라운딩) — 장 폭 합(줄 끝 꺾임 · 끝막음은 시공 기준으로 더한다)
