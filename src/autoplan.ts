@@ -450,36 +450,21 @@ function planOne(d: Design, cat: KitchenCatalog, series: Series, v: Variant, use
         c[0] -= fd[0] * tableExt / 2; c[1] -= fd[1] * tableExt / 2;
         island = { cx: c[0], cz: c[1], rot, len: fitLen, frame: islandFrame(c[0], c[1], rot, fitLen) };
         if (fitLen < len && (armLo || armHi)) reasons.push(`아일랜드 길이 ${fitLen}mm(설정 ${len}) — 옆 장과 끝마다 통로 ${islandPass}mm`);
-      } else if (across >= need && (armLo || armHi) && !noAttach) {
-        // 반도형(사용자 2026-11-09 결정 A) — 끝마다 통로를 두면 1,200 이 안 되는 좁은 ㄷ자. 팔 하나의 장 앞면에 붙이고(코너장 ㄱ자 연결) 반대 끝에만 통로.
-        //   붙임은 사용자가 옮겨 붙일 때와 같은 길(pos)로 — 코너장 자리가 싱크 · 냉장고 · 창 · 문에 걸려 안 붙으면 다른 팔, 둘 다 안 되면 뺀다(C)
-        const tries: Candidate[] = [];
-        const narrowWhy = `${armLo && armHi ? '양쪽 장 사이' : '옆 장과 벽 사이'}가 좁아(${Math.round(hi - lo)}mm)`;
-        for (const [arm, side] of [[armLo, 0], [armHi, 1]] as const) {
-          if (!arm) continue;
-          const face = side === 0 ? lo - (COUNTER_D - BASE_D) : hi + (COUNTER_D - BASE_D);   // 팔 장 앞면
-          // 열린 끝은 맞은편이 팔이 아니어도(ㄱ자 — 줄 끝 벽) 통로를 둔다. 한 끝을 붙였으니 그쪽마저 막히면 장 앞 바닥이 갇힌다
-          const far = side === 0 ? hi - islandPass : lo + islandPass;
-          const Lp = Math.min(len, Math.floor((Math.abs(far - face) - tableExt) / 100) * 100);
-          if (Lp < 1200) continue;
-          const t0 = side === 0 ? face : face - Lp;
-          const c = P(main.frame, t0 + Lp / 2, islU);
-          const r = planOne({ ...d, islandCfg: { ...cfg, len: Lp, pos: { x: c[0], z: c[1], rot } }, _islShift: 2 } as Design, cat, series, v, useFix, false);
-          if (r?.island?.attached == null) continue;
-          const pass = side === 0 ? hi - (face + Lp + tableExt) : face - Lp - tableExt - lo;
-          r.reasons.push(`${narrowWhy} 아일랜드를 ${wallName(d.openWall, arm.wall)} 장에 붙인 반도형으로 — 길이 ${Lp}mm${Lp < len ? `(설정 ${len})` : ''}, 반대쪽 통로 ${Math.round(pass)}mm`);
-          tries.push(r);
-        }
-        if (tries.length) return tries.sort((p, q) => q.score - p.score)[0];
-        warnings.push(`${narrowWhy} 아일랜드를 넣지 않았습니다 — 끝마다 통로 ${islandPass}mm를 두면 1,200mm보다 짧고, 장에 붙일 자리도 없습니다`);
       } else {
-        // 통로가 좁아도 빼지 않는다 — 빈 바닥 가운데에 놓고 알림 (예전엔 말없이 빠져 아일랜드가 사라진 것처럼 보였다)
-        const far = opposite ? across - COUNTER_D : across;
+        // 기본 자리에만 놓는다(사용자 2026-11-12 「사용자가 아일랜드 추가 후 사이즈 변경 또는 이동해서 다른 장하고 연결할지 테이블로 교체할지 정함 —
+        //   우린 추가하면 기본위치에 배치만한다」). 좁아도 장에 붙이지(반도형) 않고 빼지도 않는다 — 긴 줄 앞 기본 자리에 놓고 알림만.
+        //   (2026-11-09 결정 A 의 자동 반도형 · 뺌은 없앴다. 예전엔 말없이 빠져 아일랜드가 사라진 것처럼 보이기도 했다)
+        const deep = across >= need, far = opposite ? across - COUNTER_D : across;
         const L2 = Math.max(1200, fitLen);
-        const c0 = P(main.frame, (main.a + main.b) / 2, (COUNTER_D + far) / 2);
-        const c = inRoom(c0[0], c0[1], rot, L2);
+        // 방 깊이가 되면 긴 줄 앞 작업 통로 자리 · 팔 사이 가운데, 안 되면 빈 바닥 가운데
+        const c0 = deep ? P(main.frame, (lo + padLo + hi - padHi) / 2, islU) : P(main.frame, (main.a + main.b) / 2, (COUNTER_D + far) / 2);
+        const fd = islandFrame(c0[0], c0[1], rot, L2).dir;
+        const c = inRoom(c0[0] - fd[0] * tableExt / 2, c0[1] - fd[1] * tableExt / 2, rot, L2);
         island = { cx: c[0], cz: c[1], rot, len: L2, frame: islandFrame(c[0], c[1], rot, L2) };
-        warnings.push(`아일랜드 둘레 통로가 좁습니다 (권장 깊이 ${need}mm · 지금 ${across}mm) — 끌어 옮기거나 길이를 줄여 보세요`);
+        const todo = '길이를 줄이거나, 끌어서 옆 장에 붙이거나, 식탁으로 바꿔 보세요';
+        warnings.push(deep
+          ? `아일랜드 둘레 통로가 좁습니다 (${armLo && armHi ? '양쪽 장 사이' : '옆 장과 벽 사이'} ${Math.round(hi - lo)}mm · 끝 통로 권장 ${islandPass}mm) — ${todo}`
+          : `아일랜드 둘레 통로가 좁습니다 (권장 깊이 ${need}mm · 지금 ${across}mm) — ${todo}`);
       }
     }
   }

@@ -1,4 +1,5 @@
 // ㄷ자 · ㄱ자 + 아일랜드 — 아일랜드가 옆 장(팔)에 닿아 길이 막히는지(동선 막힘), 통로 900 이 남는지, 반도형 · 뺌이 몇 번인지. npx vite-node tools/probe-island-u.ts
+// 2026-11-12 사용자 결정 「우린 추가하면 기본위치에 배치만한다」 — 자동 배치는 붙이지도(반도형) 빼지도 않는다: 반도형 0 · 뺌 0, 좁으면 알림
 import { readFileSync } from 'node:fs';
 import { setReader, loadCatalog } from '../src/kjlLib';
 import { autoPlan, COUNTER_D } from '../src/autoplan';
